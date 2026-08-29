@@ -1,0 +1,13 @@
+[Unit]
+Description=Gideon local voice assistant
+After=graphical-session.target sound.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pjaroliya/pjaroliya/private/gideon
+ExecStart=/home/pjaroliya/pjaroliya/private/gideon/.venv/bin/python -m orchestrator.main
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,12 @@
+# Tkinter (popup.py) ships with Python itself - no pip package needed.
+
+# Tray icon + the image it displays.
+pystray>=0.19.5
+Pillow>=10.0.0
+
+# Lets pystray use its AppIndicator backend (needed for the tray icon to
+# actually show up on GNOME - see plan.md's tray-icon notes). Requires the
+# system package `libgirepository-2.0-dev` to be installed first
+# (`sudo apt install libgirepository-2.0-dev`) or this pip install fails
+# trying to build from source.
+PyGObject>=3.50.0

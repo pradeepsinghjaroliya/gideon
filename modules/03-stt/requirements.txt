@@ -1,0 +1,10 @@
+# faster-whisper (CTranslate2-based) is pure CPU/GPU inference via ctranslate2
+# - no torch/CUDA pairing pitfalls like 01-audio-io's silero-vad dependency.
+# Kept out of the root pyproject.toml to follow the same "extra ML deps live
+# in the module's own requirements.txt" convention.
+faster-whisper>=1.0.0
+
+# Model weights are downloaded from Hugging Face on first use per
+# model_size (tiny/base/small/medium/large-v3) and cached under
+# ~/.cache/huggingface - no separate download step needed, unlike
+# openwakeword's bundled model files.

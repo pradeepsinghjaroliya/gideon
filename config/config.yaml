@@ -1,0 +1,37 @@
+# See ARCHITECTURE.md for the full schema description and rationale.
+# Placeholder values below - each module fills in real choices as it's
+# built (record the change in task.md's "open decisions" log too).
+
+audio:
+  input_device: default
+  output_device: default
+  sample_rate: 16000
+  frame_ms: 30
+
+wake_word:
+  backend: openwakeword
+  model: hey_jarvis
+  threshold: 0.5
+
+stt:
+  backend: faster_whisper
+  model_size: small
+  device: cpu
+
+llm:
+  backend: ollama
+  model: qwen2.5:1.5b
+  base_url: http://localhost:11434
+  system_prompt: "You are a concise local voice assistant."
+
+tts:
+  backend: piper
+  voice: en_US-lessac-high
+
+text_input:
+  hotkey: null
+
+orchestrator:
+  history_turns: 6
+  followup_seconds: 10   # after speaking, how long to keep listening for a
+                          # follow-up before requiring the wake word again

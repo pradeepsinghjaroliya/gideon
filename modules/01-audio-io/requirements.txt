@@ -1,0 +1,15 @@
+# Extra deps for 01-audio-io, kept out of pyproject.toml because torch/
+# torchaudio need to come from PyTorch's own CPU wheel index -- installing
+# them from plain PyPI can resolve a torchaudio build that expects a CUDA
+# runtime and crashes on import even on a CPU-only machine (see task.md
+# notes, 2026-08-26). Install with:
+#   pip install -r modules/01-audio-io/requirements.txt
+#
+# Also requires the system PortAudio library for `sounddevice` to import:
+#   sudo apt install libportaudio2
+--extra-index-url https://download.pytorch.org/whl/cpu
+sounddevice>=0.4.6
+torch==2.5.1
+torchaudio==2.5.1
+silero-vad>=5.0
+onnxruntime>=1.17

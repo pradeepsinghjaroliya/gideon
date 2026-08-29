@@ -1,0 +1,8 @@
+# Piper TTS - ONNX-based, no torch/CUDA pairing pitfall like 01-audio-io's
+# silero-vad dependency. Voice model files are downloaded automatically on
+# first use (see engine.py) to ~/.cache/piper-voices, not bundled here.
+piper-tts>=1.7.0
+
+# Only needed for this module's own standalone playback demo
+# (speak_demo.py) - 01-audio-io owns playback in the integrated system.
+sounddevice>=0.4.6

@@ -1,0 +1,9 @@
+# Every other module's own implementation (audio_io, wake_word, stt,
+# llm_client, tts, text_input) is what orchestrator actually runs - install
+# each module's own requirements.txt first (see their plan.md files).
+#
+# requests is already installed as part of 04-llm-client's requirements.txt
+# (OllamaClient uses it) - listed here too since orchestrator/ollama_control.py
+# also imports it directly, for the tray dashboard's LLM running/start/stop
+# control, and each module's requirements.txt should be self-describing.
+requests>=2.31.0

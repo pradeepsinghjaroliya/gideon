@@ -1,0 +1,18 @@
+# openWakeWord is pure ONNX/tflite inference - no torch, no CUDA wheel
+# pitfalls like 01-audio-io's silero-vad dependency. Still kept out of the
+# root pyproject.toml to follow the same "extra ML deps live in the
+# module's own requirements.txt" convention.
+openwakeword>=0.6.0
+onnxruntime>=1.17
+
+# detector.py forces inference_framework="onnx" and does not use
+# tflite-runtime (an openwakeword dependency): tflite-runtime's compiled
+# extension is built against the NumPy 1.x ABI and crashes
+# (`AttributeError: _ARRAY_API not found`) under NumPy 2.x, which this
+# repo uses. onnxruntime has no such issue.
+
+# The pip package does not bundle the actual model binaries - first run
+# needs to fetch the pretrained model/feature-extractor files once:
+#   python -c "from openwakeword import utils; utils.download_models()"
+# `openwakeword.model.Model(wakeword_models=["hey_jarvis"])` will raise a
+# clear error naming the missing file if this step is needed.
