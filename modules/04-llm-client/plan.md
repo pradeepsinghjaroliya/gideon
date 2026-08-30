@@ -117,6 +117,43 @@ themselves against the live `qwen2.5:1.5b`/Ollama setup, testing
 multi-turn memory (name + fact recall across turns) - confirmed working.
 `04-llm-client` is fully done, not just self-tested.
 
+## Streaming generate + cancel (added 2026-08-30, requested by the user)
+
+This is the "consider capping response length if verbose replies hurt
+felt latency" follow-up above, resolved differently: instead of capping
+reply length, `07-orchestrator` now starts *speaking* the first sentence
+while the LLM is still generating the rest, so a long reply's total
+latency is no longer fully on the critical path before the user hears
+anything (see `07-orchestrator/plan.md`'s "Streaming replies" section for
+the full design). The user's ask: "user has to wait for whole LLM output
+to be generated... doesn't feel natural, can we do streaming."
+
+Added to `OllamaClient` (and to `LLMClient`/`ARCHITECTURE.md`'s shared
+contract):
+
+- `generate_stream(prompt, history) -> Iterator[str]` - calls the same
+  `/api/chat` endpoint with `"stream": true` instead of `false`, and
+  yields each NDJSON line's `message.content` delta as it arrives instead
+  of collecting the whole reply first.
+- `cancel()` - lets the orchestrator interrupt an in-flight
+  `generate_stream()` from another thread (the dashboard's "Stop
+  generating" control), by closing the underlying `requests` response.
+  Tracks the in-flight response under a lock using the exact same
+  ownership pattern `01-audio-io`'s `SpeakerAudioSink.stop()`/`play()`
+  just had to adopt for the same reason (see its plan.md's "Stop-speaking
+  crash fixed" section): `generate_stream()` is the sole owner of
+  `response.close()`, `cancel()` only ever closes a response it can prove
+  is still that one's, so the two can never race each other.
+
+`generate()` (non-streaming) is unchanged and still used directly by
+`Orchestrator._think()`, kept as a standalone primitive.
+
+Unit-tested (8 new tests, scripted streaming response/close tracking) -
+**not yet confirmed against a real Ollama server** in streaming mode;
+needs the user to verify token-by-token streaming actually reduces felt
+latency in practice, and that "Stop generating" interrupts a real
+in-progress Ollama request rather than just a scripted test double.
+
 ## When done
 
 Update `../../task.md`: check off `04-llm-client`, record the chosen model

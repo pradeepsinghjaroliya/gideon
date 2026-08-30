@@ -48,6 +48,16 @@ class STTEngine(Protocol):
 class LLMClient(Protocol):
     def generate(self, prompt: str, history: list[dict]) -> str: ...
     # history is a list of {"role": "user"|"assistant", "content": str}
+    def generate_stream(self, prompt: str, history: list[dict]) -> Iterator[str]: ...
+    # yields incremental text deltas as the model produces them, instead
+    # of blocking until the full reply is ready - `07-orchestrator` uses
+    # this to start speaking the first sentence while later sentences are
+    # still being generated, instead of waiting for the whole reply.
+    def cancel(self) -> None: ...
+    # interrupts an in-flight `generate_stream()` call from another
+    # thread (e.g. the dashboard's "Stop generating" control) - must be
+    # safe to call concurrently with `generate_stream()` itself, and a
+    # no-op if nothing is in flight.
 
 class TTSEngine(Protocol):
     def synthesize(self, text: str) -> tuple[np.ndarray, int]: ...  # (audio, sample_rate)

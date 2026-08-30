@@ -502,3 +502,126 @@ its `plan.md`, so later modules (and the orchestrator) aren't surprised.
   needs a live voice check. Everything else in the standalone test plan
   (items 1-3, and now 5-6) is confirmed. All modules `00`-`07` are now
   checked off above.
+- 2026-08-30: another batch of ad hoc tray/dashboard requests (see root
+  `tmp.md`, cleared into this writeup and both modules' plan.md):
+  - **Colored tray icon** (`06-text-input/src/text_input/tray.py`): the
+    generated dot now recolors per assistant state instead of always
+    being blue - grey/idle, green/listening, orange/processing, purple/
+    speaking (matching the dashboard panel's own "active" pill color),
+    red/error reserved for future use. `state_machine.py`'s `_set_status`
+    now takes an optional `state=` alongside its existing free-text
+    `message`, forwarded to a new `on_state` callback
+    (`TrayApp.set_icon_state`) wired in `main.py` - kept as a separate
+    symbolic channel rather than having the tray pattern-match the
+    human-readable message.
+  - **Tray menu restructured + unified dashboard window**: the native
+    menu no longer has standalone "Ask..."/"Status / logs..." items -
+    both were folded into `dashboard.py`'s panel, now three stacked
+    sections (quick pill buttons, then the activity log, then an ask box)
+    opened from the one remaining "Dashboard..." item.
+    `build_dashboard_window()` takes new optional `get_log_lines`/
+    `on_ask` params for the middle/bottom sections (each independently
+    opt-in, so pill-only callers/tests are unaffected). The tray menu
+    also gained live "quick insight" entries above "Dashboard..." -
+    `TrayApp(quick_menu_controls=...)`, reusing the same `DashboardControl`
+    objects as the panel's pills via pystray's callable `text`/`enabled`
+    (re-evaluated whenever the menu is shown, no separate polling needed);
+    `main.py` surfaces the LLM and mic controls there.
+  - **Assistant voice volume slider**: new `DashboardSlider` dataclass in
+    `dashboard.py` (label/get_value/on_change, normalized `0.0`-`1.0`
+    regardless of the underlying Tk `Scale`'s `0`-`100` range), rendered
+    in the dashboard's top section. `Orchestrator.set_volume`/
+    `get_volume` store the multiplier; `_speak()` applies it
+    (`_apply_volume`) to the synthesized int16 audio before playback -
+    scales in float64 and clips before casting back, so a naive multiply
+    can't wrap around at high-amplitude samples. Volume is runtime-only
+    (not persisted to `config.yaml`) since the ask didn't call for
+    persistence.
+  All unit-tested (121/121 tests passing repo-wide); **not yet confirmed
+  on real hardware** - needs the user to see the icon actually change
+  color through a real conversation, click the new quick-menu items, and
+  confirm the volume slider audibly changes playback level.
+- 2026-08-30: user tested the above and reported two issues:
+  - **"Stop speaking" crashed the whole service and closed the
+    dashboard.** Root-caused to a real thread-safety bug in
+    `01-audio-io/src/audio_io/sink.py`: `stop()` and `play()`'s own
+    `finally` block could both call `close()` on the same PortAudio
+    stream at once (`stop()` runs on the dashboard's click-handler
+    thread while `play()` blocks on `write()` on the orchestrator's own
+    thread). **Fixed** - `play()` is now the sole owner of
+    `close()`/clearing `self._stream`, guarded by a lock; `stop()` only
+    calls `abort()` and swallows any exception from an already-finished
+    stream. See `01-audio-io/plan.md`'s "Stop-speaking crash fixed"
+    section. 125/125 tests passing repo-wide.
+  - **Volume slider didn't audibly lower output**, even though the
+    user's system volume slider does. Reviewed `_apply_volume()` and the
+    dashboard slider wiring end to end - found no logic bug (the
+    multiply-and-clip math and the slider's `on_change` wiring both check
+    out, and are unit-tested). Since `07-orchestrator/main.py` runs as a
+    long-lived process (a systemd user service per `RUNBOOK.md`, or a
+    foreground `python -m orchestrator.main`), the leading suspect is
+    that the running process predates this session's code change -
+    Python doesn't hot-reload edited source, so the old process simply
+    doesn't have the volume feature yet. **Asked the user to restart
+    (`systemctl --user restart gideon.service`, or stop+rerun the
+    foreground command) and retest before assuming a further code bug.**
+- 2026-08-30: user confirmed they'd run `python -m orchestrator.main`
+  directly (current code, ruling out the stale-process theory) and
+  reported three more findings, which turned into two real bug fixes plus
+  a feature:
+  - **Two real concurrency bugs**, both root-caused and fixed:
+    1. "Stop speaking" crashed the whole service and closed the
+       dashboard - two threads racing to `close()` the same PortAudio
+       stream (`01-audio-io/src/audio_io/sink.py`). See its plan.md's
+       "Stop-speaking crash fixed" section.
+    2. After that, typed input in the dashboard "did nothing" - a silent
+       hang in the orchestrator's own thread (`MicAudioSource.read_chunk()`
+       blocking forever with no timeout after the output-stream abort
+       hiccuped the input stream). See `01-audio-io/plan.md`'s "Mic-read
+       hang fixed" section.
+  - **Streaming LLM + TTS output**: the user correctly diagnosed the
+    volume report themselves - "lowering it reflects in the next output,
+    not the ongoing one... can we do streaming instead... this will also
+    solve the volume issue" - and asked for it explicitly, plus a unified
+    "Stop generating" that gracefully stops both and still accepts the
+    next prompt. Implemented: `LLMClient` gained `generate_stream()`/
+    `cancel()` (`04-llm-client/plan.md`), `07-orchestrator`'s new
+    `_think_and_speak()` speaks each sentence as soon as it's generated
+    instead of waiting for the whole reply, and `stop_generating()`
+    replaces "Stop speaking" in the dashboard, stopping both the LLM
+    stream and any in-progress sentence together
+    (`07-orchestrator/plan.md`'s "Streaming replies" section - including
+    a real correctness bug found and fixed while writing its tests, where
+    a stop request landing mid-synthesis used to get silently dropped).
+  145/145 tests passing repo-wide. **Nothing in this batch is confirmed
+  on real hardware yet** - needs the user to retest "Stop speaking"/"Stop
+  generating" end to end, confirm typed input keeps working afterward,
+  and hear the first sentence of a reply start before the rest finishes
+  generating.
+- 2026-08-30: user retested and reported "Stop speaking" now "crashed for
+  a few seconds" with PortAudio C-library ALSA errors printed to stderr
+  (`Expression '...' failed in 'pa_linux_alsa.c'`), plus a question about
+  why streaming looks like "a line at a time" rather than "a word at a
+  time" like OpenAI-style streaming.
+  - **Root-caused and fixed**: `stop()` interrupting `play()`'s one big
+    blocking `write()` via `abort()` (from another thread) was triggering
+    this machine's ALSA backend's own internal xrun-recovery path, which
+    itself failed/retried for several seconds before unblocking - not a
+    process crash (already fixed), just a very disruptive stall.
+    Replaced `abort()`-based interruption entirely: `play()` now writes
+    in small ~100ms chunks, checking a plain `threading.Event` between
+    them; `stop()` just sets that event, never touching the PortAudio
+    stream from another thread at all. See `01-audio-io/plan.md`'s
+    "Abort-triggered ALSA xrun replaced with cooperative chunked writes"
+    section.
+  - **Streaming granularity explained, not a bug**: Ollama does stream
+    token-by-token under the hood (confirmed - same NDJSON mechanism
+    OpenAI-style APIs use); `_stream_sentences()` deliberately buffers
+    into whole sentences before speaking/logging, since Piper needs a
+    full sentence for natural-sounding speech. Added a `DEBUG`-level
+    per-token log (`_log_deltas()`) so the user can see the real
+    token-by-token stream if they want to verify it themselves. See
+    `07-orchestrator/plan.md`'s matching follow-up note.
+  146/146 tests passing repo-wide. **Not yet confirmed on real
+  hardware** - needs the user to retest "Stop speaking"/"Stop generating"
+  and confirm the ALSA errors and stall are gone.

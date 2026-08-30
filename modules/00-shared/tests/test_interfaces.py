@@ -53,6 +53,12 @@ class FakeLLMClient:
     def generate(self, prompt: str, history: list[dict]) -> str:
         return "fake response"
 
+    def generate_stream(self, prompt: str, history: list[dict]):
+        yield "fake response"
+
+    def cancel(self) -> None:
+        pass
+
 
 class FakeTTSEngine:
     def synthesize(self, text: str) -> tuple[np.ndarray, int]:

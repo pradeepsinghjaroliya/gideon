@@ -299,6 +299,178 @@ limitation, not something specific to this project - see
 "Dashboard..." is now the first menu item as the closest available
 improvement.
 
+## Icon state + voice volume (added 2026-08-30, requested by the user)
+
+Two more items from the same batch as `06-text-input/plan.md`'s matching
+section (see root `tmp.md`):
+
+- **Colored tray icon**: `_set_status()` now takes an optional `state=`
+  in addition to its existing free-text `message` - a small, fixed set of
+  symbolic strings (`"idle"`, `"listening"`, `"processing"`, `"speaking"`)
+  passed at every call site in `step()`, forwarded through a new
+  `on_state` constructor param to `TrayApp.set_icon_state` (wired in
+  `main.py`). Kept as a separate parameter rather than having `06-text-input`
+  pattern-match `message`'s human-readable text, which is meant for the
+  log, not machine parsing, and could change wording without meaning to
+  change the icon color.
+- **Assistant voice volume**: `set_volume`/`get_volume` store a plain
+  `0.0`-`1.0` multiplier (`set_volume` clamps out-of-range input rather
+  than raising, since a slider can't produce anything else meaningful
+  anyway). Applied in `_speak()` via `_apply_volume()` just after
+  `tts.synthesize()`, before the mic-mute/`audio_sink.play()` calls -
+  multiplies in `float64` and clips to the dtype's range before casting
+  back to `int16`, so a quiet multiply can't wrap around into a loud
+  artifact the way a naive in-place int16 multiply would at high-amplitude
+  samples. Deliberately *not* added to `config.yaml` - runtime-only state
+  set from the dashboard slider (`06-text-input/plan.md`'s new
+  `DashboardSlider`), since the ask was about a live control, not a
+  persisted default.
+
+Both unit-tested only so far (`test_step_reports_icon_state_at_each_stage_for_voice_turn`,
+`test_set_volume_clamps_to_zero_one_range`, `test_speak_scales_audio_by_volume_before_playback`,
+`test_speak_clips_instead_of_wrapping_at_high_volume`) - **not yet
+confirmed on real hardware**, needs the user to watch the tray icon
+change color through a real conversation and confirm the slider audibly
+changes playback volume.
+
+## Diagnosing the volume report + two crash/hang bugs found and fixed
+(2026-08-30, reported by the user)
+
+The user tested the icon/menu/volume batch above and reported three
+things, in order:
+
+1. **Volume didn't audibly lower output**, even though the system volume
+   slider does. Reviewed `_apply_volume()` and the dashboard slider
+   wiring end to end and found no logic bug - added temporary info-level
+   logging (`set_volume`/`_apply_volume`, still in place) to make this
+   diagnosable from the terminal/journal if it recurs. Confirmed the user
+   *had* restarted the process with the current code (ruling out the
+   obvious "stale running process" explanation), and the volume report
+   turned out to be expected behavior, not a bug - see item 3 below for
+   why (a change now takes effect on the very next *sentence*, not just
+   the next full turn).
+2. **"Stop speaking" crashed the whole service and closed the
+   dashboard.** Real bug, root-caused and fixed in
+   `01-audio-io/src/audio_io/sink.py` - see its plan.md's "Stop-speaking
+   crash fixed" section (two threads racing to `close()` the same
+   PortAudio stream).
+3. **After that, typed input in the dashboard's ask box "did nothing" -
+   a silent hang**, not a crash (the dashboard itself stayed responsive).
+   Root-caused to `01-audio-io/src/audio_io/source.py`'s
+   `MicAudioSource.read_chunk()` having no timeout - see its plan.md's
+   "Mic-read hang fixed" section. The dashboard staying responsive while
+   nothing happened was the key clue: it meant the *orchestrator's own
+   thread* was stuck (in `_default_drain_context()`'s `thread.join()`),
+   not the whole process.
+
+The user's own diagnosis of item 1 while this was being investigated -
+"if i lower the volume it reflects in this next output, not on going
+output... can we do streaming instead... this will also solve volume
+issue as it will get reflected next translation properly in streaming
+mode" - was exactly right, and is what "Streaming replies" below
+implements ("translation" here means TTS/speech synthesis, not a
+separate feature - there isn't one in this project; see that section's
+opening note).
+
+## Streaming replies + "Stop generating" (added 2026-08-30, requested by
+the user)
+
+The user's core complaint: "currently user has to wait for whole llm
+output to be generated, then the whole output gets translated [TTS'd],
+so there is a gap in between where user is just sitting, waiting -
+doesn't feel natural." Asked for streaming of both the LLM output and
+the TTS/playback, with "stop generating" gracefully stopping both and
+still accepting the next prompt properly.
+
+`step()`'s inner loop no longer calls `_think()` then `_speak()` once
+each per turn - it now calls one new method, **`_think_and_speak()`**,
+which:
+
+- Reads `LLMClient.generate_stream()`'s incremental text deltas through a
+  new module-level `_stream_sentences()` generator (a plain punctuation-
+  plus-whitespace boundary check - simple, not NLP-grade, documented as
+  such; good enough since it only controls *where `_speak()` chunk
+  boundaries fall*, not the correctness of the reply text itself).
+- Synthesizes and speaks (`_speak()`, otherwise unchanged) each sentence
+  the moment it's complete, instead of waiting for the whole reply - the
+  assistant starts talking after the first sentence instead of the whole
+  answer.
+- Records the full accumulated reply to history in a `finally`, whether
+  the turn completed normally or was stopped early - `_think()`'s history
+  bookkeeping was extracted into a shared `_record_reply()` helper so
+  both paths use identical trim/append logic.
+
+`_think()` and `_speak()` themselves are **unchanged** and still directly
+tested as standalone primitives (`_speak()` is in fact reused as-is, once
+per sentence) - `step()` just no longer calls `_think()` directly.
+
+**New unified stop control**: `stop_generating()` (replacing "Stop
+speaking" in the dashboard - `main.py`'s `_build_dashboard_controls` now
+wires "Stop generating" to it, enabled via the new `is_responding()`
+rather than `is_speaking()`, so it stays clickable through *both*
+sub-phases) sets `_stop_requested`, aborts current playback via
+`AudioSink.stop()` if a sentence is mid-play (same mechanism
+`stop_speaking()` already had), and calls the new `LLMClient.cancel()` to
+interrupt the LLM stream even if it's sitting on a slow network read
+between tokens - see `04-llm-client/plan.md`'s matching section for how
+`OllamaClient.cancel()` does that safely.
+
+**A real bug found while writing the streaming tests, fixed before this
+shipped**: `_speak()` used to reset `_stop_requested = False` *after*
+calling `TTSEngine.synthesize()` but *before* `AudioSink.play()`. That
+was harmless in the old one-`_speak()`-call-per-turn design, but once
+`_think_and_speak()` calls `_speak()` repeatedly per turn, a stop request
+that arrived *during* that call's own `synthesize()` (a real, plausible
+timing - Piper synthesis isn't instant) got silently wiped out right
+before playback started, and the loop would carry on through the rest of
+the reply completely unimpeded - a "stop" that visibly did nothing.
+**Fixed**: the reset now happens *before* `synthesize()` instead of
+after, and `_speak()` checks `_stop_requested` again right after
+`synthesize()` returns, skipping `play()` entirely if a stop landed
+during synthesis rather than clearing the flag. Caught immediately by
+`test_stop_generating_cancels_llm_and_skips_remaining_sentences`, which
+now asserts `sink.played == []` for exactly this case.
+
+**Volume side effect (this is what actually answers the user's own
+volume report above)**: `_apply_volume()` now runs once per sentence
+instead of once per whole reply, so a volume change made mid-reply is
+heard starting with the very next sentence rather than only the next
+full turn - directly what the user asked for ("this will also solve
+volume issue").
+
+Unit-tested (11 new tests in `test_state_machine.py`: streaming/history/
+status-per-sentence, `is_responding()` timing, three `stop_generating()`
+scenarios including the synthesis-time-stop regression above, and three
+for `_stream_sentences()` itself) - all 145 tests passing repo-wide.
+**Not yet confirmed on real hardware** - needs the user to hear the first
+sentence start before the rest of a longer reply finishes generating,
+and to confirm "Stop generating" cleanly stops a real in-progress
+Ollama + Piper turn and that the next prompt is accepted normally
+afterward.
+
+**Follow-up question from the user**: why does streaming look like "a
+line at a time" in the log rather than "a word at a time," the way
+OpenAI-style token streaming looks? Not a model or `generate_stream()`
+limitation - Ollama really is delivering individual token deltas via its
+NDJSON stream, same mechanism. It's a deliberate choice in
+`_stream_sentences()`: deltas are buffered into whole sentences before
+anything is synthesized, spoken, or logged, because Piper needs a
+complete sentence to produce natural-sounding speech - synthesizing
+word-by-word would sound choppy/robotic. Added `_think_and_speak()`'s new
+`_log_deltas()` helper, which logs each raw token delta at `logging.DEBUG`
+(the orchestrator's default level is `INFO`, per
+`00-shared/src/shared/logging_setup.py` - the user needs to bump that to
+see this) so real per-token arrival is directly visible if they want to
+confirm it themselves, separate from the sentence-level speaking/log
+granularity.
+
+**Also fixed while addressing the ALSA crash above**: `_speak()` now
+logs "playback stopped early by request" from a normal (non-raising)
+`_audio_sink.play()` return too, not just from a caught exception - see
+`01-audio-io/plan.md`'s "Abort-triggered ALSA xrun replaced with
+cooperative chunked writes" section for why `SpeakerAudioSink.play()` no
+longer raises on interruption at all.
+
 ## Verification status
 
 Implemented and unit-tested (12 tests, `test_state_machine.py`, fully

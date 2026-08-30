@@ -1,5 +1,6 @@
 import pystray
 
+from text_input.dashboard import DashboardControl
 from text_input.tray import TrayApp
 
 
@@ -17,55 +18,19 @@ class FakeIcon:
         self.stopped = True
 
 
-class FakeProvider:
-    def __init__(self, texts: list[str | None]) -> None:
-        self._texts = list(texts)
-
-    def get_text(self) -> str | None:
-        return self._texts.pop(0)
-
-
-def test_ask_then_quit_calls_on_text_and_stops_icon():
-    received: list[str] = []
+def test_quit_stops_icon():
     icon = FakeIcon()
-    app = TrayApp(on_text=received.append, provider=FakeProvider(["hello"]), icon=icon)
+    app = TrayApp(on_text=lambda text: None, icon=icon)
 
-    app._request_ask(icon, None)
     app._request_quit(icon, None)
     app.run()
 
-    assert received == ["hello"]
     assert icon.stopped
-
-
-def test_cancelled_popup_does_not_call_on_text():
-    received: list[str] = []
-    icon = FakeIcon()
-    app = TrayApp(on_text=received.append, provider=FakeProvider([None]), icon=icon)
-
-    app._request_ask(icon, None)
-    app._request_quit(icon, None)
-    app.run()
-
-    assert received == []
-
-
-def test_multiple_asks_processed_in_order():
-    received: list[str] = []
-    icon = FakeIcon()
-    app = TrayApp(on_text=received.append, provider=FakeProvider(["first", "second"]), icon=icon)
-
-    app._request_ask(icon, None)
-    app._request_ask(icon, None)
-    app._request_quit(icon, None)
-    app.run()
-
-    assert received == ["first", "second"]
 
 
 def test_set_status_appends_to_log_and_updates_icon_title():
     icon = FakeIcon()
-    app = TrayApp(on_text=lambda text: None, provider=FakeProvider([]), icon=icon)
+    app = TrayApp(on_text=lambda text: None, icon=icon)
 
     app.set_status("Idle - waiting for the wake word")
     app.set_status("Listening - recording your question")
@@ -87,34 +52,54 @@ def test_set_status_survives_icon_title_failure():
         def title(self, value):
             raise RuntimeError("backend doesn't support live title updates")
 
-    app = TrayApp(on_text=lambda text: None, provider=FakeProvider([]), icon=BrokenTitleIcon())
+    app = TrayApp(on_text=lambda text: None, icon=BrokenTitleIcon())
 
     app.set_status("Idle")  # must not raise
 
     assert list(app._log) == ["Idle"]
 
 
-def test_status_request_opens_status_window():
-    calls: list[list[str]] = []
+def test_set_icon_state_updates_icon_to_the_state_color():
     icon = FakeIcon()
-    app = TrayApp(on_text=lambda text: None, provider=FakeProvider([]), icon=icon)
-    app._show_status_window = lambda: calls.append(list(app._log))
-    app.set_status("Idle - waiting for the wake word")
+    app = TrayApp(on_text=lambda text: None, icon=icon)
 
-    app._request_status(icon, None)
-    app._request_quit(icon, None)
-    app.run()
+    app.set_icon_state("listening")
 
-    assert calls == [["Idle - waiting for the wake word"]]
+    assert icon.icon is not None
+    assert icon.icon.getpixel((32, 32))[:3] == (67, 176, 71)
 
 
-def test_extra_menu_items_inserted_between_ask_and_status():
+def test_set_icon_state_falls_back_to_idle_color_for_unknown_state():
+    icon = FakeIcon()
+    app = TrayApp(on_text=lambda text: None, icon=icon)
+
+    app.set_icon_state("not-a-real-state")
+
+    assert icon.icon.getpixel((32, 32))[:3] == (158, 158, 158)
+
+
+def test_set_icon_state_survives_icon_assignment_failure():
+    class BrokenIconIcon(FakeIcon):
+        @property
+        def icon(self):
+            return self._icon
+
+        @icon.setter
+        def icon(self, value):
+            raise RuntimeError("backend doesn't support live icon updates")
+
+    app = TrayApp(on_text=lambda text: None, icon=BrokenIconIcon())
+
+    app.set_icon_state("speaking")  # must not raise
+
+
+def test_extra_menu_items_inserted_before_quit():
     extra = pystray.MenuItem("Mute mic", lambda icon, item: None)
     app = TrayApp(on_text=lambda text: None, extra_menu_items=[extra])
 
     labels = [item.text for item in app._icon.menu]
 
-    assert labels == ["Ask...", "Mute mic", "Status / logs...", "Quit"]
+    assert labels == ["Mute mic", "Quit"]
 
 
 def test_no_dashboard_menu_item_when_no_dashboard_controls_given():
@@ -126,20 +111,18 @@ def test_no_dashboard_menu_item_when_no_dashboard_controls_given():
 
 
 def test_dashboard_menu_item_present_when_controls_given():
-    from text_input.dashboard import DashboardControl
-
     control = DashboardControl(get_label=lambda: "Mic: On", on_click=lambda: None)
     app = TrayApp(on_text=lambda text: None, dashboard_controls=[control])
 
     labels = [item.text for item in app._icon.menu]
 
-    assert labels == ["Dashboard...", "Ask...", "Status / logs...", "Quit"]
+    assert labels == ["Dashboard...", "Quit"]
 
 
 def test_dashboard_request_opens_dashboard_window():
     calls = []
     icon = FakeIcon()
-    app = TrayApp(on_text=lambda text: None, provider=FakeProvider([]), icon=icon)
+    app = TrayApp(on_text=lambda text: None, icon=icon)
     app._show_dashboard_window = lambda: calls.append(True)
 
     app._request_dashboard(icon, None)
@@ -147,3 +130,33 @@ def test_dashboard_request_opens_dashboard_window():
     app.run()
 
     assert calls == [True]
+
+
+def test_quick_menu_controls_render_as_live_native_items():
+    state = {"label": "Mic: On"}
+    clicks = []
+    control = DashboardControl(get_label=lambda: state["label"], on_click=lambda: clicks.append("clicked"))
+    app = TrayApp(on_text=lambda text: None, quick_menu_controls=[control])
+
+    item = next(iter(app._icon.menu))
+    assert str(item) == "Mic: On"
+
+    item(app._icon)
+    assert clicks == ["clicked"]
+
+    state["label"] = "Mic: Muted"
+    assert str(item) == "Mic: Muted"
+
+
+def test_quick_menu_items_come_before_dashboard_and_quit():
+    control = DashboardControl(get_label=lambda: "LLM: Running", on_click=lambda: None)
+    dashboard_control = DashboardControl(get_label=lambda: "Stop speaking", on_click=lambda: None)
+    app = TrayApp(
+        on_text=lambda text: None,
+        quick_menu_controls=[control],
+        dashboard_controls=[dashboard_control],
+    )
+
+    labels = [str(item) for item in app._icon.menu]
+
+    assert labels == ["LLM: Running", "Dashboard...", "Quit"]

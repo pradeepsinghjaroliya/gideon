@@ -63,3 +63,41 @@ def test_stop_closes_stream():
     source, stream = make_source()
     source.stop()
     assert stream.closed
+
+
+def test_read_chunk_returns_silence_instead_of_blocking_forever_on_stalled_queue():
+    """Regression test for a real, confirmed hang: `queue.Queue.get()` has
+    no timeout by default, so a stalled input callback (observed after
+    aborting playback mid-write) used to block `read_chunk()` - and
+    everything waiting on it - forever, with no exception and no log
+    line. A bounded timeout means the caller always gets a same-shaped
+    silent frame back instead."""
+    source, _ = make_source(read_timeout=0.05)
+
+    chunk = source.read_chunk()
+
+    assert chunk.shape == (source._frame_samples,)
+    assert chunk.dtype == np.int16
+    assert np.all(chunk == 0)
+
+
+def test_read_chunk_logs_a_warning_on_timeout():
+    warnings = []
+
+    class FakeLog:
+        def warning(self, *args, **kwargs):
+            warnings.append(args)
+
+    source, _ = make_source(read_timeout=0.05, logger=FakeLog())
+
+    source.read_chunk()
+
+    assert len(warnings) == 1
+
+
+def test_read_chunk_does_not_time_out_when_a_real_frame_is_already_queued():
+    source, _ = make_source(read_timeout=0.05)
+    frame = np.full(480, 42, dtype=np.int16)
+    source._callback(frame.reshape(-1, 1), 480, None, None)
+
+    assert np.array_equal(source.read_chunk(), frame)

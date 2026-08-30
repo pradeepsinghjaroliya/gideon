@@ -20,7 +20,7 @@ from audio_io.source import MicAudioSource
 from audio_io.vad import SileroVAD
 from llm_client.ollama_client import OllamaClient
 from stt.engine import FasterWhisperEngine
-from text_input.dashboard import DashboardControl
+from text_input.dashboard import DashboardControl, DashboardSlider
 from text_input.tray import TrayApp
 from tts.engine import PiperEngine
 from wake_word.detector import OpenWakeWordDetector
@@ -86,11 +86,29 @@ def _build_dashboard_controls(
             is_active=lambda: orchestrator().is_online(),
         ),
         DashboardControl(
-            get_label=lambda: "Stop speaking",
-            on_click=lambda: orchestrator().stop_speaking(),
-            is_enabled=lambda: orchestrator().is_speaking(),
+            get_label=lambda: "Stop generating",
+            on_click=lambda: orchestrator().stop_generating(),
+            is_enabled=lambda: orchestrator().is_responding(),
         ),
     ]
+
+
+def _build_volume_control(orchestrator_ref: list[Orchestrator]) -> DashboardSlider:
+    """Dashboard's "Assistant voice volume" slider - a plain multiplier on
+    TTS output (`Orchestrator._apply_volume`), independent of the system/
+    output-device volume. Same one-element-list indirection as
+    `_build_dashboard_controls` - `orchestrator_ref[0]` isn't filled in
+    until after this is called, but that's fine since `get_value`/
+    `on_change` only run once the slider is actually shown/moved."""
+
+    def orchestrator() -> Orchestrator:
+        return orchestrator_ref[0]
+
+    return DashboardSlider(
+        label="Assistant voice volume",
+        get_value=lambda: orchestrator().get_volume(),
+        on_change=lambda value: orchestrator().set_volume(value),
+    )
 
 
 def main() -> None:
@@ -101,6 +119,7 @@ def main() -> None:
         sample_rate=config.audio.sample_rate,
         frame_ms=config.audio.frame_ms,
         device=config.audio.input_device,
+        logger=log,
     )
     audio_sink = SpeakerAudioSink(device=config.audio.output_device)
     vad = SileroVAD(sample_rate=config.audio.sample_rate)
@@ -114,9 +133,15 @@ def main() -> None:
     llm_control = OllamaControl(base_url=config.llm.base_url)
     orchestrator_ref: list[Orchestrator] = []
     tray_app_ref: list[TrayApp] = []
+    dashboard_controls = _build_dashboard_controls(llm_control, orchestrator_ref, tray_app_ref)
     tray_app = TrayApp(
         on_text=text_queue.put,
-        dashboard_controls=_build_dashboard_controls(llm_control, orchestrator_ref, tray_app_ref),
+        # LLM/mic (the two most-checked-at-a-glance controls) also surface
+        # directly in the native tray menu - see tray.py's docstring -
+        # "Online" and "Stop speaking" stay dashboard-only.
+        quick_menu_controls=dashboard_controls[:2],
+        dashboard_controls=dashboard_controls,
+        volume_control=_build_volume_control(orchestrator_ref),
     )
     tray_app_ref.append(tray_app)
     tray_thread = threading.Thread(target=tray_app.run, daemon=True)
@@ -135,6 +160,7 @@ def main() -> None:
         sample_rate=config.audio.sample_rate,
         logger=log,
         on_status=tray_app.set_status,
+        on_state=tray_app.set_icon_state,
     )
     orchestrator_ref.append(orchestrator)
 

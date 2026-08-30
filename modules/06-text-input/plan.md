@@ -236,6 +236,68 @@ StatusNotifierItem D-Bus service, which is out of scope. Made the one
 improvement that *is* possible: reordered the menu so "Dashboard..." is
 now the first item (was previously after "Ask...").
 
+## Colored tray icon, unified dashboard window, volume slider (added
+2026-08-30, requested by the user)
+
+Another batch of ad hoc requests (see root `tmp.md`, cleared into this
+writeup and `07-orchestrator/plan.md`'s "Tray dashboard controls"
+section):
+
+- **"Can we have a better icon than a blue dot, and change its color
+  based on what's going on (grey=idle, green=listening,
+  orange=processing, etc)?"**: `_make_icon_image()` now takes a `color`
+  (still the same generated dot, no bundled asset needed - the ask was
+  about color, not shape). New `TrayApp.set_icon_state(state)` maps a
+  symbolic state string to a color via `_STATE_COLORS` (grey/idle,
+  green/listening, orange/processing, purple/speaking - reusing the
+  dashboard panel's own "active" pill color rather than inventing a new
+  one, so the tray and panel read as one visual language - red/error
+  reserved but not yet driven by anything) and swaps `icon.icon`, falling
+  back to idle's grey for an unrecognized state rather than raising.
+  Wrapped in `try/except Exception` like `set_status`'s tooltip update -
+  not every tray backend is guaranteed to support a live icon swap.
+  `07-orchestrator/state_machine.py` calls it via a new `on_state`
+  callback, parallel to the existing `on_status` but carrying a symbolic
+  state instead of a human-readable message - kept separate so this
+  module never has to pattern-match `on_status`'s free text.
+- **"Instead of Dashboard/Ask/Status-logs menu items, put LLM status, mic
+  status, and other quick insights in the menu itself"** + **"clicking
+  Dashboard should open a window with quick buttons on top, logs in the
+  middle, and a manual ask box on the bottom"**: read together as one
+  redesign - the standalone "Ask..." popup and "Status / logs..." window
+  are gone, folded into `dashboard.py`'s panel as two new optional
+  sections (`build_dashboard_window(..., get_log_lines=, on_ask=)`, same
+  live-refresh-not-static-snapshot pattern the old status window already
+  used). The tray menu keeps exactly one entry point, "Dashboard...",
+  plus new **quick-insight entries above it** (`TrayApp(quick_menu_controls=...)`)
+  - native `pystray.MenuItem`s built from the *same* `DashboardControl`
+    objects the panel's pills use, via pystray's callable `text`/
+  `enabled` params (re-evaluated whenever the menu is shown - no separate
+  polling needed, same mechanism `main.py`'s old `llm_label()`/
+  `mic_label()` closures already relied on for the panel). `main.py`
+  passes the LLM and mic controls here; "Online" and "Stop speaking" stay
+  dashboard-only since they're checked less often.
+- **"Have a slider for volume, lowering it should lower the AI
+  assistant's voice"**: new `DashboardSlider` dataclass (label/
+  get_value/on_change, normalized to `0.0`-`1.0` so callers don't need to
+  know Tk `Scale`'s `0`-`100` convention) rendered in the panel's top
+  section below the pill grid. The slider itself only calls
+  `on_change`/`get_value` - the actual volume multiply happens in
+  `07-orchestrator/state_machine.py`'s `_apply_volume()`, since this
+  module has no opinion on audio, only the widget.
+
+Testing note: driving a Tk `Scale`'s `command` callback in a test needs
+an explicit `root.update()` after `.set(...)` - unlike most of this
+module's widgets, `Scale`'s command fires through the Tk event loop
+rather than synchronously.
+
+**Not yet confirmed on real hardware** - all of the above is unit-tested
+only (`test_tray_app.py`'s icon-state/quick-menu tests, `test_dashboard.py`'s
+log/ask/volume-section tests). Needs the user to see the tray dot
+actually change color through a real conversation, click the new
+LLM/mic quick-menu entries, and confirm the slider audibly changes
+playback volume.
+
 ## Open decisions for this module
 
 - **GNOME tray icon support — resolved.** Needed `sudo apt install

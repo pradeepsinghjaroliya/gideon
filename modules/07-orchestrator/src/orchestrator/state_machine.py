@@ -13,9 +13,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import queue
+import re
 import threading
 import time
-from typing import Callable, ContextManager, Protocol
+from typing import Callable, ContextManager, Iterable, Iterator, Protocol
 
 import numpy as np
 
@@ -37,6 +38,35 @@ class TextQueue(Protocol):
     def get_nowait(self) -> str: ...
 
 
+# Matches sentence-ending punctuation followed by whitespace (not at the
+# very end of the buffer, where more text may still be coming). Simple,
+# not NLP-grade - doesn't special-case abbreviations ("Mr.") or decimals
+# ("3.14") - which is fine here since it only controls where `_speak()`
+# chunk boundaries fall for streaming playback, not the reply text itself.
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?](?=[ \n\t])")
+
+
+def _stream_sentences(deltas: Iterable[str]) -> Iterator[str]:
+    """Buffers streamed LLM text deltas (`LLMClient.generate_stream()`)
+    and yields each complete sentence as soon as it's seen, instead of
+    waiting for the whole reply - lets `Orchestrator._think_and_speak()`
+    start synthesizing/speaking sentence 1 while the LLM is still
+    generating sentence 2. Any leftover text once `deltas` is exhausted
+    (a final sentence with no trailing punctuation, or a short reply with
+    none at all) is flushed as one last "sentence" so nothing is lost."""
+    buffer = ""
+    for delta in deltas:
+        buffer += delta
+        match = _SENTENCE_BOUNDARY_RE.search(buffer)
+        while match:
+            yield buffer[: match.end()].strip()
+            buffer = buffer[match.end() :]
+            match = _SENTENCE_BOUNDARY_RE.search(buffer)
+    remainder = buffer.strip()
+    if remainder:
+        yield remainder
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -54,6 +84,7 @@ class Orchestrator:
         sample_rate: int = 16000,
         logger: logging.Logger | None = None,
         on_status: Callable[[str], None] | None = None,
+        on_state: Callable[[str], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         drain_context: Callable[[], ContextManager] | None = None,
     ) -> None:
@@ -71,6 +102,7 @@ class Orchestrator:
         self._sample_rate = sample_rate
         self._log = logger or logging.getLogger("orchestrator")
         self._on_status = on_status
+        self._on_state = on_state
         self._clock = clock
         self._drain_context = drain_context or self._default_drain_context
 
@@ -79,7 +111,9 @@ class Orchestrator:
         self._user_muted_mic = False
         self._auto_muted_for_speaking = False
         self._speaking = False
+        self._responding = False
         self._stop_requested = False
+        self._volume = 1.0
         self._online_event = threading.Event()
         self._online_event.set()
 
@@ -113,16 +147,24 @@ class Orchestrator:
             stop.set()
             thread.join()
 
-    def _set_status(self, message: str) -> None:
+    def _set_status(self, message: str, state: str | None = None) -> None:
         """Logs `message` and, if `on_status` was given (the tray icon's
         `TrayApp.set_status`, in `main.py`), forwards it there too - see
-        `06-text-input/src/text_input/tray.py`'s "Status / logs..." menu
-        item, added so a non-technical user can see what state the
-        assistant is in (idle/listening/thinking/speaking) without reading
-        the terminal/journald log."""
+        `06-text-input/src/text_input/tray.py`'s dashboard log section,
+        added so a non-technical user can see what state the assistant is
+        in (idle/listening/thinking/speaking) without reading the
+        terminal/journald log.
+
+        `state` is a separate, symbolic ("idle"/"listening"/"processing"/
+        "speaking") counterpart to `message`'s free-text description -
+        forwarded to `on_state` (`TrayApp.set_icon_state`) so the tray icon
+        can recolor itself without needing to pattern-match `message`,
+        which is meant for humans reading the log, not machine parsing."""
         self._log.info(message)
         if self._on_status is not None:
             self._on_status(message)
+        if state is not None and self._on_state is not None:
+            self._on_state(state)
 
     def stop(self) -> None:
         """Safe to call from another thread (e.g. a signal handler) - the
@@ -157,6 +199,31 @@ class Orchestrator:
     def is_speaking(self) -> bool:
         return self._speaking
 
+    def is_responding(self) -> bool:
+        """True for the whole span of `_think_and_speak()` - both while
+        waiting on the next LLM token and while a sentence is actually
+        playing - not just the narrower `is_speaking()` window. Drives
+        the dashboard's "Stop generating" control, which should stay
+        clickable through either sub-phase."""
+        return self._responding
+
+    def set_volume(self, value: float) -> None:
+        """Assistant voice volume, from the dashboard's slider - a
+        multiplier applied to TTS output in `_speak()`, independent of the
+        system/output-device volume. Clamped to `[0.0, 1.0]` since values
+        outside that range would clip or invert the waveform.
+
+        Logged at info level (temporary diagnostic - see
+        `06-text-input/plan.md`'s "not audibly lowering output" note) so
+        it's visible in the same terminal/journal as every other status
+        line, to isolate whether the slider is even reaching this method
+        versus reaching it but not affecting actual playback."""
+        self._volume = max(0.0, min(1.0, value))
+        self._log.info("assistant voice volume set to %d%%", round(self._volume * 100))
+
+    def get_volume(self) -> float:
+        return self._volume
+
     def stop_speaking(self) -> None:
         """Cuts a reply short mid-playback, from the tray's "Stop
         speaking" action - e.g. the LLM produced a long-winded answer and
@@ -170,6 +237,26 @@ class Orchestrator:
         if self._speaking:
             self._stop_requested = True
             self._audio_sink.stop()
+
+    def stop_generating(self) -> None:
+        """Interrupts a streaming reply (`_think_and_speak()`) from the
+        dashboard's "Stop generating" control - covers both of its
+        sub-phases in one call, unlike `stop_speaking()` above (which only
+        ever covers the narrower "currently playing a sentence" window):
+        an LLM stream still being read is cancelled via `LLMClient.cancel()`
+        (the same "close what I still own, from another thread" pattern
+        `SpeakerAudioSink.stop()` uses), and a sentence already mid-
+        playback is aborted exactly like `stop_speaking()` always has.
+        Either way `_think_and_speak()` still records whatever was
+        generated so far to history before returning, so the next prompt
+        is accepted normally afterward instead of the conversation
+        getting stuck. A no-op if nothing is in flight."""
+        if not self._responding:
+            return
+        self._stop_requested = True
+        if self._speaking:
+            self._audio_sink.stop()
+        self._llm.cancel()
 
     def run_forever(self) -> None:
         self._running = True
@@ -192,48 +279,44 @@ class Orchestrator:
         SPEAKING, gives the user up to `followup_seconds` to continue the
         conversation without repeating the wake word (see
         `_await_followup`) before finally returning to true IDLE."""
-        self._set_status("Idle - waiting for the wake word or a typed question")
+        self._set_status("Idle - waiting for the wake word or a typed question", state="idle")
         kind, text = self._idle()
         if kind in ("stopped", "offline"):
             return
 
         if kind == "voice":
-            self._set_status("Listening - recording your question")
+            self._set_status("Listening - recording your question", state="listening")
             audio = self._listen()
-            self._set_status("Transcribing your question")
+            self._set_status("Transcribing your question", state="processing")
             text = self._transcribe_and_log(audio)
         else:
-            self._set_status(f"Got a typed question: {text!r}")
+            self._set_status(f"Got a typed question: {text!r}", state="processing")
 
         while True:
             if not text:
-                self._set_status("Didn't catch anything - back to idle")
+                self._set_status("Didn't catch anything - back to idle", state="idle")
                 return
 
-            self._set_status("Thinking - waiting on the local LLM for a reply")
+            self._set_status("Thinking - waiting on the local LLM for a reply", state="processing")
             start = time.monotonic()
-            reply = self._think(text)
-            self._log.info("got LLM reply in %.2fs: %r", time.monotonic() - start, reply)
-
-            self._set_status(f"Speaking: {reply!r}")
-            start = time.monotonic()
-            self._speak(reply)
-            self._log.info("finished speaking in %.2fs", time.monotonic() - start)
+            self._think_and_speak(text)
+            self._log.info("finished responding in %.2fs", time.monotonic() - start)
 
             self._set_status(
-                f"Idle - listening for a follow-up ({self._followup_seconds:.0f}s, no wake word needed)..."
+                f"Idle - listening for a follow-up ({self._followup_seconds:.0f}s, no wake word needed)...",
+                state="listening",
             )
             followup_kind, payload = self._await_followup()
             if followup_kind == "timeout":
-                self._set_status("Idle - waiting for the wake word or a typed question")
+                self._set_status("Idle - waiting for the wake word or a typed question", state="idle")
                 return
 
             if followup_kind == "voice":
-                self._set_status("Transcribing your question")
+                self._set_status("Transcribing your question", state="processing")
                 text = self._transcribe_and_log(payload)
             else:
                 text = payload
-                self._set_status(f"Got a typed question: {text!r}")
+                self._set_status(f"Got a typed question: {text!r}", state="processing")
 
     def _transcribe_and_log(self, audio: np.ndarray) -> str:
         start = time.monotonic()
@@ -331,26 +414,110 @@ class Orchestrator:
         return self._stt.transcribe(audio, self._sample_rate)
 
     def _think(self, prompt: str) -> str:
+        """Non-streaming single-shot LLM call - still available/tested as
+        a standalone primitive, but `step()` itself now calls
+        `_think_and_speak()` instead (see its docstring)."""
         with self._drain_context():
             reply = self._llm.generate(prompt, list(self.history))
+        self._record_reply(prompt, reply)
+        return reply
 
+    def _record_reply(self, prompt: str, reply: str) -> None:
         self.history.append({"role": "user", "content": prompt})
         self.history.append({"role": "assistant", "content": reply})
         max_messages = self._history_turns * 2
         if len(self.history) > max_messages:
             self.history = self.history[-max_messages:]
 
-        return reply
+    def _think_and_speak(self, prompt: str) -> None:
+        """Streams the reply sentence-by-sentence instead of the old
+        generate-the-whole-reply-then-synthesize-the-whole-reply sequence
+        (`_think()` + `_speak()`, kept above as standalone, still-tested
+        primitives) - the user's ask: waiting for the *entire* reply to
+        both finish generating and finish synthesizing before hearing
+        anything left a dead gap that didn't feel like a natural
+        conversation. Each sentence is synthesized and spoken (`_speak()`,
+        unchanged) the moment it's complete, so the assistant starts
+        talking as soon as the LLM has produced one full sentence rather
+        than the whole answer.
+
+        As a side effect, `_apply_volume()` (inside `_speak()`) now reads
+        the current volume once per sentence instead of once per whole
+        reply - a volume change made mid-reply is heard starting with the
+        very next sentence instead of only the next full turn.
+
+        `stop_generating()` can interrupt either sub-phase: the LLM
+        stream (checked via `_stop_requested` between sentences, and
+        interruptible mid-network-wait via `LLMClient.cancel()`) or an
+        in-flight `_speak()` call (the existing "abort mid-play"
+        mechanism). Either way, whatever was generated so far is still
+        recorded to history in the `finally` below, so the conversation
+        can continue normally on the next turn instead of getting stuck.
+        """
+        reply_parts: list[str] = []
+        self._stop_requested = False
+        self._responding = True
+        try:
+            with self._drain_context():
+                deltas = self._llm.generate_stream(prompt, list(self.history))
+                try:
+                    for sentence in _stream_sentences(self._log_deltas(deltas)):
+                        if self._stop_requested:
+                            break
+                        reply_parts.append(sentence)
+                        self._set_status(f"Speaking: {sentence!r}", state="speaking")
+                        self._speak(sentence)
+                        if self._stop_requested:
+                            break
+                except Exception:
+                    if not self._stop_requested:
+                        raise
+                    self._log.info("generation stopped early by request")
+                finally:
+                    deltas.close()
+        finally:
+            self._responding = False
+            self._record_reply(prompt, " ".join(reply_parts).strip())
+
+    def _log_deltas(self, deltas: Iterator[str]) -> Iterator[str]:
+        """Debug-level visibility into the raw token-level stream from
+        `LLMClient.generate_stream()` - Ollama really is streaming
+        token-by-token under the hood here (the same NDJSON-per-token
+        mechanism OpenAI-style APIs use), it's just not logged/spoken at
+        that granularity: `_stream_sentences()` buffers deltas into whole
+        sentences before anything is synthesized or shown at a "Speaking:
+        ..." line, because Piper (the TTS engine) needs a full sentence
+        to produce natural-sounding speech - synthesizing word-by-word
+        would sound choppy and robotic. That's a deliberate TTS-quality
+        choice in this module, not a model or streaming limitation. Set
+        the orchestrator logger to DEBUG to see this."""
+        for delta in deltas:
+            self._log.debug("LLM token delta: %r", delta)
+            yield delta
 
     def _speak(self, text: str) -> None:
         with self._drain_context():
+            # Reset *before* synthesizing, not after: `_think_and_speak()`
+            # calls `_speak()` once per streamed sentence, and a stop
+            # request can legitimately arrive *during* this call's own
+            # `synthesize()` (a real, confirmed bug - resetting after
+            # synthesize silently swallowed exactly that request, letting
+            # generation carry on through the rest of the reply
+            # unimpeded). Resetting here is still safe for a standalone
+            # `_speak()` call too: any caller looping over several
+            # `_speak()` calls (only `_think_and_speak()` today) already
+            # checks `_stop_requested` and stops looping before ever
+            # reaching this point, so this can only be clearing a stale
+            # `True` left over from an earlier, unrelated, already-
+            # finished turn - never one meant for the call in progress.
+            self._stop_requested = False
             audio, sample_rate = self._tts.synthesize(text)
+            if self._stop_requested:
+                self._log.info("skipping playback - stop requested during synthesis")
+                return
+            audio = self._apply_volume(audio)
             self._auto_muted_for_speaking = True
             self._apply_mute()
-            # Reset _stop_requested before _speaking goes True, so
-            # stop_speaking() (gated on `self._speaking`) can never fire
-            # against a stale flag left over from a previous turn.
-            self._stop_requested = False
             self._speaking = True
             try:
                 self._audio_sink.play(audio, sample_rate)
@@ -358,10 +525,39 @@ class Orchestrator:
                 if not self._stop_requested:
                     raise
                 self._log.info("playback stopped early by request")
+            else:
+                # `01-audio-io`'s `SpeakerAudioSink` no longer raises on
+                # interruption - it just returns early once `stop()`'s
+                # flag is noticed between write chunks (see its
+                # docstring) - so a stop still needs logging here even
+                # without an exception to catch.
+                if self._stop_requested:
+                    self._log.info("playback stopped early by request")
             finally:
                 self._speaking = False
                 self._auto_muted_for_speaking = False
                 self._apply_mute()
+
+    def _apply_volume(self, audio: np.ndarray) -> np.ndarray:
+        """Scales TTS output by the dashboard volume slider before
+        playback - done here rather than in `AudioSink` so this module
+        stays the single owner of "assistant voice" volume state,
+        independent of whichever sink backend is wired up. Multiplies in
+        float64 and clips before casting back to the original (int16)
+        dtype, since a naive in-place int16 multiply would wrap around
+        instead of clipping at high-amplitude samples."""
+        if self._volume == 1.0 or len(audio) == 0:
+            return audio
+        self._log.info(
+            "scaling TTS output (%d samples, peak %d) by volume=%.2f",
+            len(audio), int(np.abs(audio).max()), self._volume,
+        )
+        dtype = audio.dtype
+        scaled = audio.astype(np.float64) * self._volume
+        if np.issubdtype(dtype, np.integer):
+            info = np.iinfo(dtype)
+            scaled = np.clip(scaled, info.min, info.max)
+        return scaled.astype(dtype)
 
     def _apply_mute(self) -> None:
         """The mic is muted while either SPEAKING (so the assistant

@@ -89,10 +89,40 @@ class FakeLLM:
     def __init__(self, reply="a reply"):
         self.reply = reply
         self.calls = []
+        self.cancel_calls = 0
 
     def generate(self, prompt, history):
         self.calls.append((prompt, list(history)))
         return self.reply
+
+    def generate_stream(self, prompt, history):
+        """Yields the whole configured reply as a single delta - matches
+        every existing status/history test's expectations exactly, since
+        `_stream_sentences` then flushes it as one "sentence" once this
+        generator is exhausted. `StreamingFakeLLM` below yields multiple
+        deltas for tests that specifically exercise multi-sentence
+        streaming."""
+        self.calls.append((prompt, list(history)))
+        yield self.reply
+
+    def cancel(self):
+        self.cancel_calls += 1
+
+
+class StreamingFakeLLM(FakeLLM):
+    """Yields `deltas` one at a time instead of the whole reply in one
+    shot, for tests that need multiple sentences to actually stream in
+    separately (e.g. to prove each one is spoken as soon as it's
+    complete, not only once the whole reply is done)."""
+
+    def __init__(self, deltas):
+        super().__init__(reply="".join(deltas))
+        self.deltas = deltas
+
+    def generate_stream(self, prompt, history):
+        self.calls.append((prompt, list(history)))
+        for delta in self.deltas:
+            yield delta
 
 
 class FakeTTS:
@@ -482,6 +512,233 @@ def test_step_reports_status_for_text_turn():
         "Idle - listening for a follow-up (0s, no wake word needed)...",
         "Idle - waiting for the wake word or a typed question",
     ]
+
+
+def test_step_reports_icon_state_at_each_stage_for_voice_turn():
+    states: list[str] = []
+    wake_word = FakeWakeWord([True])
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk(160)] * 20),
+        vad=FakeVAD([False, True, False]),
+        wake_word=wake_word,
+        stt=FakeSTT(text="what time is it"),
+        llm=FakeLLM(reply="it's noon"),
+        on_state=states.append,
+        followup_seconds=0,
+    )
+    orch._running = True
+
+    orch.step()
+
+    assert states == ["idle", "listening", "processing", "processing", "speaking", "listening", "idle"]
+
+
+def test_set_volume_clamps_to_zero_one_range():
+    orch = _make_orchestrator()
+
+    orch.set_volume(1.5)
+    assert orch.get_volume() == 1.0
+
+    orch.set_volume(-0.5)
+    assert orch.get_volume() == 0.0
+
+    orch.set_volume(0.3)
+    assert orch.get_volume() == 0.3
+
+
+def test_speak_scales_audio_by_volume_before_playback():
+    sink = FakeAudioSink()
+    orch = _make_orchestrator(audio_sink=sink, tts=FakeTTS())
+    orch.set_volume(0.5)
+
+    orch._speak("it's noon")
+
+    played_audio, _ = sink.played[0]
+    assert list(played_audio) == [0, 1, 1]  # [1, 2, 3] * 0.5, truncated back to int16
+    assert played_audio.dtype == np.int16
+
+
+def test_speak_at_full_volume_leaves_audio_unchanged():
+    sink = FakeAudioSink()
+    orch = _make_orchestrator(audio_sink=sink, tts=FakeTTS())
+
+    orch._speak("it's noon")
+
+    played_audio, _ = sink.played[0]
+    assert list(played_audio) == [1, 2, 3]
+
+
+def test_speak_clips_instead_of_wrapping_at_high_volume():
+    class LoudTTS:
+        def synthesize(self, text):
+            return np.array([30000, -30000], dtype=np.int16), 22050
+
+    sink = FakeAudioSink()
+    orch = _make_orchestrator(audio_sink=sink, tts=LoudTTS())
+    orch.set_volume(1.0)
+    orch._volume = 2.0  # beyond what set_volume allows, to exercise the clip path directly
+
+    orch._speak("loud")
+
+    played_audio, _ = sink.played[0]
+    assert list(played_audio) == [32767, -32768]
+
+
+def test_think_and_speak_speaks_each_streamed_sentence_separately():
+    class TrackingTTS:
+        def __init__(self):
+            self.calls = []
+
+        def synthesize(self, text):
+            self.calls.append(text)
+            return np.array([1, 2, 3], dtype=np.int16), 22050
+
+    tts = TrackingTTS()
+    sink = FakeAudioSink()
+    llm = StreamingFakeLLM(["Hi there. ", "How are you? ", "Bye."])
+    orch = _make_orchestrator(llm=llm, tts=tts, audio_sink=sink)
+
+    orch._think_and_speak("hello")
+
+    assert tts.calls == ["Hi there.", "How are you?", "Bye."]
+    assert len(sink.played) == 3
+
+
+def test_think_and_speak_records_full_reply_to_history():
+    llm = StreamingFakeLLM(["Hi there. ", "How are you?"])
+    orch = _make_orchestrator(llm=llm, tts=FakeTTS())
+
+    orch._think_and_speak("hello")
+
+    assert orch.history[-2:] == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "Hi there. How are you?"},
+    ]
+
+
+def test_think_and_speak_reports_status_per_sentence():
+    statuses = []
+    llm = StreamingFakeLLM(["Hi there. ", "Bye."])
+    orch = _make_orchestrator(llm=llm, tts=FakeTTS(), on_status=statuses.append)
+
+    orch._think_and_speak("hello")
+
+    assert statuses == ["Speaking: 'Hi there.'", "Speaking: 'Bye.'"]
+
+
+def test_is_responding_true_only_during_think_and_speak():
+    llm = StreamingFakeLLM(["Hi there. "])
+
+    class SnoopingTTS:
+        def __init__(self, orch_box):
+            self.orch_box = orch_box
+            self.was_responding_during_synthesize = None
+
+        def synthesize(self, text):
+            self.was_responding_during_synthesize = self.orch_box[0].is_responding()
+            return np.array([1, 2, 3], dtype=np.int16), 22050
+
+    orch_box = []
+    tts = SnoopingTTS(orch_box)
+    orch = _make_orchestrator(llm=llm, tts=tts)
+    orch_box.append(orch)
+
+    assert orch.is_responding() is False
+    orch._think_and_speak("hello")
+    assert tts.was_responding_during_synthesize is True
+    assert orch.is_responding() is False
+
+
+def test_stop_generating_does_nothing_when_not_responding():
+    llm = FakeLLM()
+    orch = _make_orchestrator(llm=llm)
+
+    orch.stop_generating()  # must not raise or call anything
+
+    assert llm.cancel_calls == 0
+
+
+def test_stop_generating_cancels_llm_and_skips_remaining_sentences():
+    llm = StreamingFakeLLM(["Hi there. ", "How are you? ", "Bye."])
+    sink = FakeAudioSink()
+
+    class StoppingTTS:
+        """Stops generation as soon as the first sentence is being
+        synthesized - simulates the dashboard click landing mid-turn."""
+
+        def __init__(self, orch_box):
+            self.orch_box = orch_box
+            self.calls = []
+
+        def synthesize(self, text):
+            self.calls.append(text)
+            if len(self.calls) == 1:
+                self.orch_box[0].stop_generating()
+            return np.array([1, 2, 3], dtype=np.int16), 22050
+
+    orch_box = []
+    tts = StoppingTTS(orch_box)
+    orch = _make_orchestrator(llm=llm, tts=tts, audio_sink=sink)
+    orch_box.append(orch)
+
+    orch._think_and_speak("hello")
+
+    assert tts.calls == ["Hi there."]  # never got to the remaining sentences
+    # Regression coverage: a stop requested *during* synthesis (before
+    # `_speaking` is even set True) used to get silently cleared by
+    # `_speak()`'s own reset, so playback proceeded anyway and the loop
+    # carried on to the next sentence unimpeded.
+    assert sink.played == []
+    assert llm.cancel_calls == 1
+    assert orch.is_responding() is False
+    # the sentence already spoken is still recorded, not dropped:
+    assert orch.history[-1] == {"role": "assistant", "content": "Hi there."}
+
+
+def test_stop_generating_interrupts_playback_of_the_current_sentence():
+    class AbortingSink:
+        def __init__(self, orch_box):
+            self.orch_box = orch_box
+            self.stopped = False
+
+        def play(self, audio, sample_rate):
+            self.orch_box[0].stop_generating()
+            raise RuntimeError("interrupted")
+
+        def stop(self):
+            self.stopped = True
+
+    orch_box = []
+    sink = AbortingSink(orch_box)
+    llm = StreamingFakeLLM(["Hi there. ", "How are you?"])
+    orch = _make_orchestrator(llm=llm, tts=FakeTTS(), audio_sink=sink)
+    orch_box.append(orch)
+
+    orch._think_and_speak("hello")  # must not raise
+
+    assert sink.stopped
+    assert orch.is_speaking() is False
+    assert orch.is_responding() is False
+
+
+def test_stream_sentences_yields_complete_sentences_as_they_appear():
+    from orchestrator.state_machine import _stream_sentences
+
+    deltas = ["Hi ", "there. How ", "are you? ", "Good, thanks."]
+
+    assert list(_stream_sentences(deltas)) == ["Hi there.", "How are you?", "Good, thanks."]
+
+
+def test_stream_sentences_flushes_trailing_text_with_no_punctuation():
+    from orchestrator.state_machine import _stream_sentences
+
+    assert list(_stream_sentences(["just some text"])) == ["just some text"]
+
+
+def test_stream_sentences_yields_nothing_for_empty_input():
+    from orchestrator.state_machine import _stream_sentences
+
+    assert list(_stream_sentences([])) == []
 
 
 def test_step_does_nothing_further_on_empty_transcript():

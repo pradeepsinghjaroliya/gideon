@@ -10,7 +10,7 @@ int16 numpy arrays at 16kHz.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Iterator, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -51,6 +51,10 @@ class STTEngine(Protocol):
 @runtime_checkable
 class LLMClient(Protocol):
     def generate(self, prompt: str, history: list[dict]) -> str: ...
+
+    def generate_stream(self, prompt: str, history: list[dict]) -> Iterator[str]: ...
+
+    def cancel(self) -> None: ...
 
 
 @runtime_checkable
