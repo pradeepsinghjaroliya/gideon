@@ -11,6 +11,7 @@ returning to IDLE.
 
 from __future__ import annotations
 
+import os
 from typing import Callable
 
 import numpy as np
@@ -25,7 +26,12 @@ class _OpenWakeWordModel:
     def __init__(self, model_name: str) -> None:
         from openwakeword.model import Model
 
-        self._model_name = model_name
+        # openwakeword.Model keys its predictions dict by
+        # os.path.splitext(os.path.basename(path))[0] for a custom model
+        # path (e.g. "models/hey_gideon.onnx" -> "hey_gideon"), not by the
+        # raw path string - this is a no-op for a bare built-in name like
+        # "hey_jarvis", so it works for both cases.
+        self._model_name = os.path.splitext(os.path.basename(model_name))[0]
         # Force the ONNX backend: openwakeword defaults to tflite when
         # tflite-runtime is installed, but tflite-runtime's compiled
         # extension is built against the NumPy 1.x ABI and crashes under
@@ -49,7 +55,7 @@ def _load_default_model(model_name: str) -> _OpenWakeWordModel:
 class OpenWakeWordDetector:
     def __init__(
         self,
-        model: str = "hey_jarvis",
+        model: str = "modules/02-wake-word/models/hey_gideon.onnx",
         threshold: float = 0.5,
         model_fn: ModelFn | None = None,
     ) -> None:

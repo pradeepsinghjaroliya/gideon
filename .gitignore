@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+asterix_story_log.json
+
+# train_wake_word.sh's default working directory (venv, cloned repos,
+# downloaded datasets, generated clips - tens of GB, never commit)
+modules/02-wake-word/training/run/

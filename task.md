@@ -7,7 +7,7 @@ in any order in between.
 
 - [x] `00-shared` — interfaces, config loader, logging setup
 - [x] `01-audio-io` — mic capture, speaker playback, VAD, device selection
-- [x] `02-wake-word` — openWakeWord integration (works; recall is weak, see notes below)
+- [x] `02-wake-word` — openWakeWord integration (custom "hey gideon" model trained and confirmed working 2026-08-31, see notes below)
 - [x] `03-stt` — faster-whisper wrapper (`small` model confirmed by measurement)
 - [x] `04-llm-client` — Ollama HTTP client wrapper (`qwen2.5:1.5b` confirmed by measurement)
 - [x] `05-tts` — Piper wrapper (`en_US-lessac-high` confirmed by listening test)
@@ -18,9 +18,15 @@ in any order in between.
 
 Record decisions here as they're made (which session, what was decided, why):
 
-- Wake word/phrase: **"hey jarvis"** — openWakeWord's pretrained
-  `hey_jarvis` model, used as-is for v1 (2026-08-26). `config.yaml` was
-  already stubbed to this value, so no custom training was needed.
+- Wake word/phrase: **"hey gideon"** (2026-08-31) — a custom-trained
+  openWakeWord model, replacing "hey jarvis" (openWakeWord's pretrained
+  `hey_jarvis` model, used as-is for v1 on 2026-08-26 since it needed no
+  training). Trained locally on CPU after several real upstream
+  compatibility breakages were worked around; measured false-positive
+  rate (4.87/hour) is above the 0.2/hour target due to training on 3,000
+  samples instead of the recommended 20,000+, but confirmed working on
+  real hardware. See `modules/02-wake-word/plan.md` for the full list of
+  fixes and measured metrics.
 - STT model size: **`small`** — measured against real speech (2026-08-26,
   Open Speech Repository Harvard-sentence recordings), notably more
   accurate than `tiny` and still well under 1s for a typical few-second
@@ -143,6 +149,53 @@ its `plan.md`, so later modules (and the orchestrator) aren't surprised.
     `wake_word.threshold`, or train a custom wake word via
     openWakeWord's synthetic-TTS pipeline for better recall — revisit
     once the full pipeline is wired up and this is felt end-to-end.
+- 2026-08-31: `02-wake-word` retrained with a custom "hey gideon" model,
+  acting on the deferred follow-up above. Decisions/deviations:
+  - **Trained locally on CPU, not Colab**, despite `training/`'s notebook
+    being written for Colab — turned out fast enough (actual NN training
+    ~13 min; TTS clip generation, the slower step, still well under a day)
+    since the classifier trains on small precomputed feature vectors, not
+    raw audio.
+  - **11 separate real upstream compatibility breakages** found and
+    fixed to get the pipeline running at all (openWakeWord's official
+    tutorial has rotted since it was written): `speexdsp-ns` unavailable
+    for current Python, a removed `torchaudio` API, `pkg_resources`
+    dropped by new setuptools, `piper-sample-generator`'s repo
+    restructured (deleted a file `train.py` imports) and that same change
+    dropping a default argument `train.py` relies on, a missing
+    `piper-tts` package, `datasets` broken two different ways, AudioSet's
+    HF dataset reorganized (dead download link), FMA's loader script
+    broken outright (dropped from the pipeline entirely), `torchaudio`
+    routing through `torchcodec` which needs system ffmpeg libs not
+    present, a 22050 Hz vs. 16000 Hz sample-rate mismatch between the
+    Piper TTS voice and openWakeWord's pipeline, and a missing
+    `onnxscript` package for ONNX export. All fixes are captured in
+    `modules/02-wake-word/training/hey_gideon_training.ipynb` and
+    `training/README.md` for future retraining.
+  - **Training config**: `n_samples=3000` (openWakeWord recommends
+    20,000+ for best results — deliberately smaller for a faster v1 run),
+    `steps=50000` + two automatic ~5000-step fine-tuning cycles,
+    `layer_size=32` `dnn` model.
+  - **Measured metrics**: accuracy 0.807, recall 0.623, false positives
+    4.87/hour (target 0.2/hour, not met — a known consequence of the
+    reduced `n_samples`, not a pipeline bug).
+  - **Real bug found and fixed in `detector.py`**: `_OpenWakeWordModel`
+    indexed openWakeWord's predictions dict by the raw model path string,
+    but openWakeWord actually keys it by
+    `os.path.splitext(os.path.basename(path))[0]`. This only ever worked
+    by accident for a bare built-in name like `hey_jarvis` (a no-op
+    transform) and was silently broken for any custom path — missed
+    during initial verification because that verification called
+    `openwakeword.model.Model` directly rather than through this
+    wrapper, and only surfaced when the user ran `listen_demo.py` for
+    real and hit `KeyError: 'modules/02-wake-word/models/hey_gideon.onnx'`.
+    Fixed by applying the same derivation in `_OpenWakeWordModel.__init__`.
+  - **Confirmed working on real hardware 2026-08-31** via
+    `.venv/bin/python -m wake_word.listen_demo` after that fix — user
+    confirmed "works good" at `threshold=0.5`. Detailed true/false-positive
+    counts (matching the `hey_jarvis` entry's test style) not yet
+    recorded — worth doing if the measured false-positive rate above
+    turns out to matter in real day-to-day use.
 - 2026-08-26: `03-stt` implemented (`FasterWhisperEngine`,
   `transcribe_file.py`). Decisions/deviations:
   - **Model loading**: faster-whisper (CTranslate2 backend) fetches and

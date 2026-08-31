@@ -34,7 +34,7 @@ class AudioConfig:
 @dataclass
 class WakeWordConfig:
     backend: str = "openwakeword"
-    model: str = "hey_jarvis"
+    model: str = "modules/02-wake-word/models/hey_gideon.onnx"
     threshold: float = 0.5
 
 

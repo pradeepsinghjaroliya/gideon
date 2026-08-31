@@ -10,7 +10,7 @@ audio:
 
 wake_word:
   backend: openwakeword
-  model: hey_jarvis
+  model: modules/02-wake-word/models/hey_gideon.onnx
   threshold: 0.5
 
 stt:

@@ -18,7 +18,7 @@ from wake_word.detector import OpenWakeWordDetector
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Wake word listen demo")
-    parser.add_argument("--model", default="hey_jarvis")
+    parser.add_argument("--model", default="modules/02-wake-word/models/hey_gideon.onnx")
     parser.add_argument("--threshold", type=float, default=0.5)
     args = parser.parse_args(argv)
 
