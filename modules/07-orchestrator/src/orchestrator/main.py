@@ -124,9 +124,11 @@ def main() -> None:
     audio_sink = SpeakerAudioSink(device=config.audio.output_device)
     vad = SileroVAD(sample_rate=config.audio.sample_rate)
     wake_word = OpenWakeWordDetector(model=config.wake_word.model, threshold=config.wake_word.threshold)
-    stt = FasterWhisperEngine(model_size=config.stt.model_size, device=config.stt.device)
+    stt = FasterWhisperEngine(
+        model_size=config.stt.model_size, device=config.stt.device, model_path=config.stt.model_path
+    )
     llm = OllamaClient(model=config.llm.model, base_url=config.llm.base_url, system_prompt=config.llm.system_prompt)
-    tts = PiperEngine(voice=config.tts.voice)
+    tts = PiperEngine(voice=config.tts.voice, voices_dir=config.tts.voices_dir)
 
     text_queue: queue.Queue[str] = queue.Queue()
 

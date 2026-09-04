@@ -1,0 +1,57 @@
+Gideon for Debian/Ubuntu
+========================
+
+Ollama is a prerequisite
+------------------------
+Everything Gideon needs is bundled in this package except the language model
+backend. Gideon talks to Ollama over HTTP at http://localhost:11434, and the
+package deliberately does not vendor it: Ollama is a separate ~3GB upstream
+product with its own release cadence and its own model store.
+
+Without Ollama, Gideon still installs, starts, listens for the wake word and
+transcribes speech - but answering fails with:
+
+    could not connect to Ollama at http://localhost:11434 - is 'ollama serve' running?
+
+To satisfy it:
+
+    ollama serve &            # or run it however you normally do
+    ollama pull qwen2.5:1.5b  # the model named in /etc/gideon/config.yaml
+
+The tray icon's dashboard has an "LLM" toggle that starts and stops
+`ollama serve` for you, provided the `ollama` binary is on PATH.
+
+Known limitations
+-----------------
+* Stopping Ollama from the tray runs `pkill -f "ollama serve"`. That matches
+  any process of yours whose command line contains that string, not only the
+  one Gideon started. If you run other `ollama serve` processes, stop them
+  yourself rather than using the toggle.
+
+* The service is enabled with `systemctl --global enable`, which takes effect
+  at each user's next login. A package install cannot reliably start a user
+  service in an already-running session, so after installing run:
+
+      systemctl --user start gideon.service
+
+* The tray icon needs a StatusNotifierItem host. On stock Ubuntu GNOME that is
+  the `gnome-shell-extension-appindicator` package (a Recommends, normally
+  already present). Without it Gideon runs headless-but-working: the wake word
+  and voice pipeline are fine, but the "Ask..." popup and dashboard are
+  unreachable because there is no icon to click.
+
+* This package targets Ubuntu 24.04 (noble) on amd64. The bundled runtime is
+  self-contained, but the GTK and PyGObject packages it depends on differ on
+  other releases. preinst warns rather than refusing, so installing elsewhere
+  is possible but untested.
+
+Configuration
+-------------
+/etc/gideon/config.yaml     model choices, audio devices, prompt
+/etc/default/gideon         environment (offline guards, thread limits)
+
+Both are dpkg conffiles, so your edits survive package upgrades.
+
+Logs go to the journal:
+
+    journalctl --user -u gideon.service -f

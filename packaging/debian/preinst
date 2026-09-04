@@ -1,0 +1,45 @@
+#!/bin/sh
+# Pre-flight checks only - makes no filesystem changes.
+set -e
+
+case "$1" in
+    install|upgrade)
+        arch=$(dpkg --print-architecture)
+        if [ "$arch" != "amd64" ]; then
+            echo "gideon: warning: built for amd64, this system is $arch." >&2
+        fi
+
+        if [ -r /etc/os-release ]; then
+            . /etc/os-release
+            if [ "$VERSION_ID" != "24.04" ]; then
+                echo "gideon: warning: built and tested for Ubuntu 24.04, this system reports ${VERSION_ID:-unknown}." >&2
+                echo "gideon: warning: the bundled runtime is self-contained, but the GTK/PyGObject" >&2
+                echo "gideon: warning: dependencies may differ on this release." >&2
+            fi
+        fi
+
+        # preinst runs as root, whose PATH excludes ~/.local/bin - where
+        # ollama installs itself by default. Check the invoking user's copy
+        # too, so this note doesn't fire misleadingly.
+        ollama_found=0
+        command -v ollama >/dev/null 2>&1 && ollama_found=1
+        if [ "$ollama_found" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+            sudo_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+            [ -n "$sudo_home" ] && [ -x "$sudo_home/.local/bin/ollama" ] && ollama_found=1
+        fi
+
+        if [ "$ollama_found" -eq 0 ]; then
+            echo "gideon: note: 'ollama' was not found on PATH." >&2
+            echo "gideon: note: Gideon will install and start, but the language-model step" >&2
+            echo "gideon: note: needs it. See /usr/share/doc/gideon/README.Debian." >&2
+        fi
+        ;;
+    abort-upgrade)
+        ;;
+    *)
+        echo "preinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

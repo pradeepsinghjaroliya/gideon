@@ -1,0 +1,21 @@
+# Environment for gideon.service. Edited copies survive package upgrades
+# (this is a dpkg conffile).
+
+# Read config from the packaged location rather than relying on path
+# discovery. shared/config.py would find this anyway, but being explicit
+# means a stray checkout on the same machine can never shadow it.
+GIDEON_CONFIG=/etc/gideon/config.yaml
+
+# Offline guards. Every model ships inside the package, so nothing should
+# ever reach Hugging Face. If some code path still tries, these make it fail
+# immediately and visibly instead of hanging on an unreachable network.
+HF_HUB_OFFLINE=1
+TRANSFORMERS_OFFLINE=1
+
+# torch and ctranslate2 each bundle their own private OpenMP runtime. With
+# both loaded in one process the default thread counts oversubscribe the CPU.
+OMP_NUM_THREADS=4
+
+# Uncomment to force a specific pystray backend (appindicator, gtk, xorg).
+# Leave unset to let pystray auto-select; xorg works but is invisible on GNOME.
+#PYSTRAY_BACKEND=appindicator

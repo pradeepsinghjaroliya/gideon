@@ -1,0 +1,25 @@
+#!/bin/sh
+# Stop and disable the user service on removal. Skipped on upgrade so the
+# running instance is not disturbed mid-transaction.
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        # Best-effort stop for anyone currently logged in. Failures are
+        # expected and ignored (no session, no user manager, already stopped).
+        if [ -d /run/systemd/system ] && command -v loginctl >/dev/null 2>&1; then
+            for u in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'); do
+                systemctl --user -M "$u@" stop gideon.service >/dev/null 2>&1 || true
+            done
+        fi
+        systemctl --global disable gideon.service >/dev/null 2>&1 || true
+        ;;
+    upgrade|failed-upgrade)
+        ;;
+    *)
+        echo "prerm called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

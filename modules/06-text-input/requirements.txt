@@ -1,4 +1,9 @@
-# Tkinter (popup.py) ships with Python itself - no pip package needed.
+# Tkinter (popup.py, tray.py, dashboard.py) has no pip package - but on
+# Debian/Ubuntu it is NOT part of the base interpreter either, it lives in
+# a separate distro package:
+#   sudo apt install python3-tk
+# (The .deb build sidesteps this by bundling an interpreter that already
+# includes tkinter - see BUILD.md.)
 
 # Tray icon + the image it displays.
 pystray>=0.19.5
@@ -9,4 +14,7 @@ Pillow>=10.0.0
 # system package `libgirepository-2.0-dev` to be installed first
 # (`sudo apt install libgirepository-2.0-dev`) or this pip install fails
 # trying to build from source.
-PyGObject>=3.50.0
+# Floor is 3.48, not 3.50: Ubuntu 24.04 (noble) ships python3-gi 3.48.2 and
+# that is what pystray's AppIndicator backend actually binds against. A
+# >=3.50 floor is unsatisfiable there without building from source.
+PyGObject>=3.48

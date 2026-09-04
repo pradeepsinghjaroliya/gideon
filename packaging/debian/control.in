@@ -1,0 +1,24 @@
+Package: gideon
+Version: @VERSION@
+Section: sound
+Priority: optional
+Architecture: amd64
+Maintainer: Ankit Chhetri <achhetri@webmd.net>
+Installed-Size: @INSTALLED_SIZE@
+Depends: python3-gi (>= 3.48), python3-cairo, gir1.2-gtk-3.0,
+ libgtk-3-0t64, libglib2.0-0t64, libgdk-pixbuf-2.0-0,
+ libasound2t64, libstdc++6, libgcc-s1, procps,
+ dbus-user-session, systemd
+Recommends: gnome-shell-extension-appindicator
+Suggests: ollama
+Description: Fully local, offline voice assistant for Ubuntu
+ Gideon listens for a wake word, transcribes what you say, answers with a
+ local language model and speaks the reply back - entirely on-device, with
+ no cloud APIs. A tray icon also lets you type a question directly.
+ .
+ The package bundles its own Python runtime, openWakeWord, faster-whisper,
+ Piper TTS, PortAudio and every model weight it needs, so installing it
+ requires no network access at all.
+ .
+ The language-model step talks to a local Ollama instance, which is the one
+ component not bundled here. See /usr/share/doc/gideon/README.Debian.

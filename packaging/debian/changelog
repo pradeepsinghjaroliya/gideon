@@ -1,0 +1,25 @@
+gideon (0.1.0-2) noble; urgency=medium
+
+  * Wrapper now prepends $HOME/.local/bin to PATH. The systemd user manager
+    omits it, so the tray's LLM start/stop control could not find an ollama
+    installed there and failed with "'ollama' not found on PATH". Answering
+    was unaffected - that goes over HTTP to a running instance.
+  * preinst/postinst no longer warn about a missing ollama when the invoking
+    user has one in ~/.local/bin; they run as root, whose PATH excludes it.
+
+ -- Ankit Chhetri <achhetri@webmd.net>  Sat, 05 Sep 2026 04:45:00 +0000
+
+gideon (0.1.0-1) noble; urgency=medium
+
+  * Initial Debian packaging.
+  * Fully offline install: bundles a relocatable CPython 3.12, all 51 runtime
+    Python distributions, PortAudio and the Ayatana AppIndicator stack, plus
+    every model weight (faster-whisper small, Piper en_US-lessac-high,
+    openWakeWord feature extractors and the custom hey_gideon wake word).
+    Nothing is downloaded at install time.
+  * Installs as a systemd user service, enabled for all users via
+    `systemctl --global enable`.
+  * Requires a local Ollama instance for the language-model step; this is the
+    one component not bundled. See README.Debian.
+
+ -- Ankit Chhetri <achhetri@webmd.net>  Sat, 05 Sep 2026 04:00:00 +0000

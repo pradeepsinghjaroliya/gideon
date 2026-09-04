@@ -1,0 +1,25 @@
+[Unit]
+Description=Gideon local voice assistant
+Documentation=file:///usr/share/doc/gideon/INSTALL.md
+# A user unit, not a system one: Gideon needs the session's DISPLAY,
+# DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR for its tray icon and audio,
+# and orchestrator/main.py imports the GUI stack unconditionally at startup.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/gideon
+ExecStart=/usr/bin/gideon
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+KillMode=mixed
+NoNewPrivileges=yes
+# Deliberately no ProtectSystem/PrivateTmp/ReadWritePaths: this already runs
+# unprivileged as the logged-in user, and PrivateTmp in particular breaks the
+# PipeWire and X11 sockets under $XDG_RUNTIME_DIR and /tmp/.X11-unix, which
+# would take out both audio and the tray.
+
+[Install]
+WantedBy=default.target

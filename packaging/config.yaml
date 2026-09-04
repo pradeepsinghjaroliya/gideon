@@ -1,0 +1,46 @@
+# Gideon configuration - packaged copy (/etc/gideon/config.yaml).
+#
+# Differs from the repo's config/config.yaml only in using absolute paths:
+# a packaged service has no reliable working directory, and every model ships
+# with the package rather than being downloaded on first use.
+
+audio:
+  input_device: default
+  output_device: default
+  sample_rate: 16000
+  frame_ms: 30
+
+wake_word:
+  backend: openwakeword
+  # Absolute: openwakeword resolves this with os.path.exists() against the
+  # process CWD, so a relative path here would depend on how it was started.
+  model: /opt/gideon/models/wake_word/hey_gideon.onnx
+  threshold: 0.5
+
+stt:
+  backend: faster_whisper
+  model_size: small
+  device: cpu
+  # Pre-shipped CTranslate2 model directory. Without this, faster-whisper
+  # downloads ~486MB from Hugging Face the first time it runs.
+  model_path: /opt/gideon/models/whisper/small
+
+llm:
+  backend: ollama
+  model: qwen2.5:1.5b
+  base_url: http://localhost:11434
+  system_prompt: "You are a concise local voice assistant."
+
+tts:
+  backend: piper
+  voice: en_US-lessac-high
+  # Pre-shipped Piper voice. Without this, PiperEngine downloads ~109MB into
+  # ~/.cache/piper-voices on first use.
+  voices_dir: /opt/gideon/models/piper
+
+text_input:
+  hotkey: null
+
+orchestrator:
+  history_turns: 6
+  followup_seconds: 10

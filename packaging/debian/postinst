@@ -1,0 +1,43 @@
+#!/bin/sh
+# Enable the user service. Nothing here touches the network, and every step
+# is safe to repeat.
+set -e
+
+case "$1" in
+    configure)
+        # Gideon is a systemd *user* service - it needs the desktop session's
+        # DISPLAY, DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR. "--global"
+        # enables it for every user; it takes effect at their next login.
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        systemctl --global enable gideon.service >/dev/null 2>&1 || true
+
+        echo ""
+        echo "Gideon is installed and enabled for all users at next login."
+        echo "To start it right now without logging out, run as your desktop user:"
+        echo ""
+        echo "    systemctl --user start gideon.service"
+        echo ""
+        # Same ~/.local/bin caveat as preinst.
+        ollama_found=0
+        command -v ollama >/dev/null 2>&1 && ollama_found=1
+        if [ "$ollama_found" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+            sudo_home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+            [ -n "$sudo_home" ] && [ -x "$sudo_home/.local/bin/ollama" ] && ollama_found=1
+        fi
+        if [ "$ollama_found" -eq 0 ]; then
+            echo "Note: 'ollama' is not on PATH - the language-model step will not work"
+            echo "until it is installed and running. See /usr/share/doc/gideon/README.Debian."
+            echo ""
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure|triggered)
+        ;;
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

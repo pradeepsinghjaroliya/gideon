@@ -1,0 +1,88 @@
+Upstream-Name: gideon
+Source: https://github.com/  (internal project - no public upstream URL recorded)
+
+Files: *
+Copyright: Ankit Chhetri
+License: UNSPECIFIED
+ The Gideon source tree does not contain a LICENSE or COPYING file, so no
+ licence has been declared for the project's own code. This field is left
+ explicitly unspecified rather than guessed at. Add a LICENSE file to the
+ repository and update this stanza before distributing the package outside
+ the organisation.
+
+------------------------------------------------------------------------
+Bundled third-party components
+------------------------------------------------------------------------
+This package vendors a Python interpreter, a set of Python distributions,
+several shared libraries and four model files. Their licences are reproduced
+in the components' own metadata inside the package; the summary below is for
+orientation and is not a substitute for those files.
+
+Files: opt/gideon/python/*
+Copyright: Python Software Foundation and contributors
+License: PSF-2.0
+ A python-build-standalone CPython 3.12 distribution, including its bundled
+ Tcl/Tk and OpenSSL. Per-component licences ship under
+ /opt/gideon/python/share/ and the interpreter's own LICENSE file.
+
+Files: opt/gideon/python/lib/python3.12/site-packages/*
+Copyright: the respective upstream authors
+License: various
+ 51 Python distributions installed from their published wheels. Each carries
+ its own metadata (and, where the project provides one, its LICENSE file) in
+ the adjacent *.dist-info directory. The major ones are:
+   torch, torchaudio           BSD-3-Clause
+   numpy, scipy, scikit-learn  BSD-3-Clause
+   onnxruntime                 MIT
+   ctranslate2, faster-whisper MIT
+   openwakeword                Apache-2.0
+   piper-tts                   MIT
+   silero-vad                  MIT
+   sounddevice                 MIT
+   pystray                     LGPL-3.0
+   Pillow                      MIT-CMU
+   requests, PyYAML            Apache-2.0 / MIT
+
+Files: opt/gideon/native/*, opt/gideon/typelib/*
+Copyright: the respective upstream authors
+License: various
+ Shared libraries and a GObject-Introspection typelib extracted unmodified
+ from Ubuntu 24.04 binary packages:
+   libportaudio.so.2           MIT              (libportaudio2)
+   libjack.so.0                LGPL-2.1+        (libjack-jackd2-0)
+   libdb-5.3.so                Sleepycat        (libdb5.3t64)
+   libayatana-appindicator3    LGPL-3.0/LGPL-2.1 (libayatana-appindicator3-1)
+   libayatana-indicator3       LGPL-3.0/LGPL-2.1 (libayatana-indicator3-7)
+   libayatana-ido3             LGPL-3.0/LGPL-2.1 (libayatana-ido3-0.4-0)
+   libdbusmenu-glib/-gtk3      LGPL-2.1/LGPL-3.0 (libdbusmenu-glib4, -gtk3-4)
+   AyatanaAppIndicator3-0.1    LGPL-3.0/LGPL-2.1 (gir1.2-ayatanaappindicator3-0.1)
+ The corresponding source is available from the Ubuntu archive
+ (`apt-get source <package>`) for each of the versions listed in
+ /usr/share/doc/gideon/BUILD.md.
+
+Files: opt/gideon/models/whisper/*
+Copyright: OpenAI; CTranslate2 conversion by Systran
+License: MIT
+ Whisper "small", converted to CTranslate2 format, redistributed from the
+ Hugging Face repository Systran/faster-whisper-small.
+
+Files: opt/gideon/models/piper/*
+Copyright: Rhasspy / Piper contributors; Lessac Technologies (source corpus)
+License: SEE-UPSTREAM
+ Piper voice en_US-lessac-high, redistributed from the Hugging Face
+ repository rhasspy/piper-voices. The voice's own .onnx.json carries no
+ licence field, so the terms are those stated by that repository for the
+ Lessac dataset. Confirm them upstream before redistributing this package
+ externally.
+
+Files: opt/gideon/models/openwakeword/*
+Copyright: David Scripka
+License: Apache-2.0
+ openWakeWord's shared melspectrogram and embedding feature extractors,
+ redistributed from the openWakeWord v0.5.1 release assets.
+
+Files: opt/gideon/models/wake_word/hey_gideon.onnx
+Copyright: Ankit Chhetri
+License: UNSPECIFIED
+ Trained for this project with openWakeWord's training pipeline
+ (modules/02-wake-word/training/). Same caveat as the project source above.

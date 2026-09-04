@@ -1,0 +1,67 @@
+# Gideon runtime dependency lock - Ubuntu 24.04 (noble) / amd64 / CPython 3.12.
+#
+# Generated from the working .venv, which is the only place this project's
+# transitive closure has ever been resolved (the repo ships no lock file).
+# Dev-only distributions (pytest, pluggy, iniconfig, Pygments) and the
+# `gideon` project itself are deliberately excluded - the .deb ships the
+# application source directly, not as a wheel.
+#
+# Two entries need care when re-resolving:
+#   torch / torchaudio  carry a +cpu local version that exists ONLY on
+#                       https://download.pytorch.org/whl/cpu and are tagged
+#                       plain linux_x86_64 (not manylinux), so they install
+#                       from --find-links but never from an index.
+#   openwakeword        declares tflite-runtime, which has no cp312 wheel.
+#                       It is downloaded with --no-deps; detector.py forces
+#                       inference_framework="onnx" so tflite is never used.
+anyio==4.15.0
+av==18.1.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+click==8.5.0
+cloudpickle==3.1.2
+ctranslate2==4.8.2
+faster-whisper==1.2.1
+filelock==3.32.5
+flatbuffers==25.12.19
+fsspec==2026.7.0
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.30.0
+idna==3.19
+Jinja2==3.1.6
+joblib==1.6.0
+MarkupSafe==3.0.3
+mpmath==1.3.0
+narwhals==2.25.0
+networkx==3.6.1
+numpy==2.5.2
+onnxruntime==1.29.0
+openwakeword==0.6.0
+packaging==26.3
+pathvalidate==3.3.1
+pillow==12.3.0
+piper-tts==1.8.0
+protobuf==7.36.1
+pycparser==3.0
+pystray==0.19.5
+python-xlib==0.33
+PyYAML==6.0.3
+requests==2.34.2
+scikit-learn==1.9.0
+scipy==1.18.1
+setuptools==78.1.0
+silero-vad==6.2.1
+six==1.17.0
+sounddevice==0.5.6
+sympy==1.13.1
+threadpoolctl==3.6.0
+tokenizers==0.23.2
+torch==2.5.1+cpu
+torchaudio==2.5.1+cpu
+tqdm==4.70.0
+typing_extensions==4.16.0
+urllib3==2.7.0

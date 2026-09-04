@@ -1,0 +1,30 @@
+#!/bin/sh
+# Gideon launcher. The single place the runtime environment is assembled.
+set -e
+
+[ -r /etc/default/gideon ] && . /etc/default/gideon
+
+PREFIX=/opt/gideon
+
+# GI needs the vendored AyatanaAppIndicator3 typelib; the .so files behind it
+# (and libjack, which libportaudio.so.2 hard-links against) come from
+# LD_LIBRARY_PATH. PortAudio itself is found via the find_library shim in
+# gideon_native.py - see the comment there for why LD_LIBRARY_PATH alone
+# is not sufficient.
+export GI_TYPELIB_PATH="$PREFIX/typelib${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"
+export LD_LIBRARY_PATH="$PREFIX/native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PYTHONPATH="$PREFIX/app${PYTHONPATH:+:$PYTHONPATH}"
+
+# The systemd user manager does not put ~/.local/bin on PATH, but that is
+# where ollama installs itself by default. orchestrator/ollama_control.py
+# uses shutil.which("ollama") for the tray's LLM start/stop control, so
+# without this that control fails with "'ollama' not found on PATH" even
+# though Ollama is installed. Answering still works either way - that goes
+# over HTTP to an already-running instance.
+[ -n "${HOME:-}" ] && export PATH="$HOME/.local/bin:$PATH"
+
+# /opt is root-owned and this runs as the desktop user, so .pyc writes would
+# fail; the tree is byte-compiled once at package build time instead.
+export PYTHONDONTWRITEBYTECODE=1
+
+exec "$PREFIX/python/bin/python3" -m orchestrator.main "$@"
