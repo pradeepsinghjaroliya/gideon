@@ -6,6 +6,16 @@ import time
 import numpy as np
 import pytest
 
+from shared.transcript import (
+    ASSISTANT_DELTA,
+    ASSISTANT_FINAL,
+    LEVEL,
+    RESET,
+    STATE,
+    USER_FINAL,
+    TranscriptEvent,
+)
+
 from orchestrator.state_machine import Orchestrator
 
 
@@ -915,3 +925,408 @@ def test_think_drains_mic_in_background_during_slow_llm_call():
     orch._think("a question")
 
     assert audio_source.read_count > 5
+
+
+# --- transcript events (08-transcript-ui) ----------------------------------
+
+
+class RecordingSink:
+    """Collects every `TranscriptEvent` the orchestrator publishes."""
+
+    def __init__(self):
+        self.events = []
+
+    def emit(self, event):
+        self.events.append(event)
+
+    def kinds(self):
+        return [event.kind for event in self.events]
+
+    def of(self, kind):
+        return [event for event in self.events if event.kind == kind]
+
+
+class FakePartials:
+    def __init__(self):
+        self.submitted = []
+        self.resets = 0
+
+    def submit(self, audio):
+        self.submitted.append(np.array(audio, copy=True))
+
+    def reset(self):
+        self.resets += 1
+
+
+def test_no_transcript_sink_leaves_behaviour_unchanged():
+    """Every existing test constructs an Orchestrator without a sink, so
+    this is the property that keeps them all valid."""
+    orch = _make_orchestrator()
+
+    assert orch._transcript is None
+    orch._emit(TranscriptEvent(kind=STATE, state="idle"))  # must be a no-op
+
+
+def test_state_transitions_are_published_to_the_transcript():
+    sink = RecordingSink()
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk()] * 40),
+        wake_word=FakeWakeWord([True]),
+        vad=FakeVAD([True, False]),
+        stt=FakeSTT("what's the weather"),
+        llm=FakeLLM("It is sunny."),
+        clock=FakeClock(tick=100.0),
+        transcript=sink,
+    )
+    orch._running = True
+
+    orch.step()
+
+    states = [event.state for event in sink.of(STATE)]
+    assert "listening" in states
+    assert "processing" in states
+    assert "speaking" in states
+
+
+def test_the_final_user_transcript_is_published():
+    sink = RecordingSink()
+    orch = _make_orchestrator(stt=FakeSTT("what's the weather"), transcript=sink)
+
+    orch._transcribe_and_log(_chunk(16000))
+
+    assert [event.text for event in sink.of(USER_FINAL)] == ["what's the weather"]
+
+
+def test_a_typed_question_is_published_as_the_user_turn():
+    """The popup path skips STT entirely, so it needs its own emit - the
+    overlay should show typed questions the same way it shows spoken ones."""
+    sink = RecordingSink()
+    text_queue = queue.Queue()
+    text_queue.put("what's the weather")
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk()] * 40),
+        text_queue=text_queue,
+        llm=FakeLLM("It is sunny."),
+        clock=FakeClock(tick=100.0),
+        transcript=sink,
+    )
+    orch._running = True
+
+    orch.step()
+
+    assert [event.text for event in sink.of(USER_FINAL)] == ["what's the weather"]
+
+
+def test_assistant_deltas_are_published_at_token_granularity():
+    """Unlike `_speak()`, which needs whole sentences for Piper to sound
+    natural, text on screen has no such constraint - the overlay gets the
+    real stream so the reply appears as it is generated."""
+    sink = RecordingSink()
+    llm = StreamingFakeLLM(["Hello", " there", ". How", " are you?"])
+    orch = _make_orchestrator(llm=llm, transcript=sink)
+
+    orch._think_and_speak("hi")
+
+    assert [event.text for event in sink.of(ASSISTANT_DELTA)] == [
+        "Hello",
+        " there",
+        ". How",
+        " are you?",
+    ]
+
+
+def test_the_assistant_turn_is_closed_when_the_reply_ends():
+    sink = RecordingSink()
+    orch = _make_orchestrator(llm=FakeLLM("It is sunny."), transcript=sink)
+
+    orch._think_and_speak("weather?")
+
+    finals = sink.of(ASSISTANT_FINAL)
+    assert len(finals) == 1
+    assert finals[0].text == "It is sunny."
+
+
+def test_an_interrupted_reply_still_closes_its_turn():
+    """Otherwise the overlay is left showing a streaming caret forever and
+    never fades out."""
+    sink = RecordingSink()
+    llm = StreamingFakeLLM(["First sentence. ", "Second sentence. "])
+    orch = _make_orchestrator(llm=llm, transcript=sink)
+    orch._responding = True
+    orch._stop_requested = True
+
+    orch._think_and_speak("hi")
+
+    assert len(sink.of(ASSISTANT_FINAL)) == 1
+
+
+def test_a_wake_word_starts_a_new_conversation_in_the_transcript():
+    sink = RecordingSink()
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk()] * 5),
+        wake_word=FakeWakeWord([False, True]),
+        transcript=sink,
+    )
+    orch._running = True
+
+    orch._idle()
+
+    assert len(sink.of(RESET)) == 1
+
+
+def test_mic_level_is_published_while_listening():
+    """Before any words are decoded, the meter is the only thing proving
+    Gideon can hear the user at all."""
+    sink = RecordingSink()
+    loud = np.full(480, 8000, dtype=np.int16)
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([loud] * 10),
+        vad=FakeVAD([True] * 6 + [False]),
+        transcript=sink,
+    )
+
+    orch._listen()
+
+    levels = sink.of(LEVEL)
+    assert levels, "expected at least one level event"
+    assert all(0.0 <= event.level <= 1.0 for event in levels)
+    assert max(event.level for event in levels) > 0.0
+
+
+def test_silence_produces_a_zero_level():
+    sink = RecordingSink()
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk(480)] * 10),
+        vad=FakeVAD([True, False]),
+        transcript=sink,
+    )
+
+    orch._listen()
+
+    assert all(event.level == 0.0 for event in sink.of(LEVEL))
+
+
+def test_events_carry_no_sequence_number_from_the_orchestrator():
+    """Stamping `seq` is the client's job, in one place, rather than at each
+    of the orchestrator's emit call sites."""
+    sink = RecordingSink()
+    orch = _make_orchestrator(stt=FakeSTT("hi"), transcript=sink)
+
+    orch._transcribe_and_log(_chunk(16000))
+
+    assert all(event.seq == 0 for event in sink.events)
+
+
+class ExplodingSink:
+    def __init__(self):
+        self.calls = 0
+
+    def emit(self, event):
+        self.calls += 1
+        raise RuntimeError("overlay wedged")
+
+
+def test_a_throwing_transcript_sink_cannot_break_a_conversation():
+    """The overlay is a nicety; the assistant working is not."""
+    sink = ExplodingSink()
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk()] * 40),
+        wake_word=FakeWakeWord([True]),
+        vad=FakeVAD([True, False]),
+        stt=FakeSTT("what's the weather"),
+        llm=FakeLLM("It is sunny."),
+        clock=FakeClock(tick=100.0),
+        transcript=sink,
+    )
+    orch._running = True
+
+    orch.step()
+
+    assert sink.calls > 0
+    assert orch.history == [
+        {"role": "user", "content": "what's the weather"},
+        {"role": "assistant", "content": "It is sunny."},
+    ]
+
+
+# --- live partial transcription --------------------------------------------
+
+
+def test_the_utterance_so_far_is_handed_to_the_partial_transcriber():
+    partials = FakePartials()
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk(480)] * 40),
+        vad=FakeVAD([True] * 25 + [False]),
+        partial_transcriber=partials,
+    )
+
+    orch._listen()
+
+    assert partials.submitted, "expected at least one partial submission"
+    # Each submission is the whole utterance so far, so they grow.
+    lengths = [len(buffer) for buffer in partials.submitted]
+    assert lengths == sorted(lengths)
+
+
+def test_partials_are_submitted_less_often_than_once_per_frame():
+    """Whisper inference is orders of magnitude slower than the 30ms frame
+    cadence; submitting every frame would be pure waste."""
+    partials = FakePartials()
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk(480)] * 40),
+        vad=FakeVAD([True] * 30 + [False]),
+        partial_transcriber=partials,
+    )
+
+    orch._listen()
+
+    assert len(partials.submitted) < 30
+
+
+def test_listening_starts_from_a_clean_partial_state():
+    """So nothing left over from a previous utterance can surface as this
+    one's first partial."""
+    partials = FakePartials()
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk(480)] * 10),
+        vad=FakeVAD([True, False]),
+        partial_transcriber=partials,
+    )
+
+    orch._listen()
+
+    assert partials.resets >= 1
+
+
+def test_the_final_transcript_resets_the_partial_transcriber():
+    """A partial still mid-inference must not overwrite the final text, nor
+    leak into the next turn."""
+    partials = FakePartials()
+    orch = _make_orchestrator(stt=FakeSTT("hello"), partial_transcriber=partials)
+    before = partials.resets
+
+    orch._transcribe_and_log(_chunk(16000))
+
+    assert partials.resets == before + 1
+
+
+def test_a_follow_up_also_feeds_the_partial_transcriber():
+    partials = FakePartials()
+    sink = RecordingSink()
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk(480)] * 40),
+        vad=FakeVAD([True] * 25 + [False]),
+        clock=FakeClock(tick=0.001),
+        partial_transcriber=partials,
+        transcript=sink,
+    )
+
+    kind, _payload = orch._await_followup()
+
+    assert kind == "voice"
+    assert partials.submitted
+    assert sink.of(LEVEL)
+
+
+def test_no_partial_transcriber_is_fine():
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk(480)] * 10),
+        vad=FakeVAD([True, False]),
+    )
+
+    orch._listen()  # must not raise
+
+
+def test_a_voice_followup_publishes_its_question_exactly_once():
+    """Regression: `step()`'s follow-up branch called `_emit_user_text`
+    *outside* its if/else, so a spoken follow-up published `user_final`
+    twice - once from `_transcribe_and_log` and once from the stray call -
+    and the overlay drew the question as two identical "You" rows. Found by
+    the user on real hardware, from a screenshot of the overlay.
+
+    Driven through `step()` rather than `_await_followup()` directly,
+    because that is exactly the gap that let this through: the existing
+    follow-up tests checked the LLM calls, and the existing transcript
+    tests called `_transcribe_and_log` on its own, so nothing ever counted
+    events across a whole two-turn conversation.
+    """
+    sink = RecordingSink()
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk(160)] * 40),
+        vad=FakeVAD([False, True, False, False, True, False]),
+        wake_word=FakeWakeWord([True]),
+        stt=FakeSTT(text="first question"),
+        llm=FakeLLM(reply="a reply"),
+        followup_seconds=5.0,
+        clock=FakeClock(tick=1.0),
+        transcript=sink,
+    )
+    orch._running = True
+
+    orch.step()
+
+    finals = sink.of(USER_FINAL)
+    assert [event.text for event in finals] == ["first question", "first question"], (
+        "expected exactly one user_final per turn across the two turns"
+    )
+
+
+def test_a_typed_followup_publishes_its_question_exactly_once():
+    """The other half of the same branch - the typed path is the one that
+    legitimately needs its own `_emit_user_text`, since nothing else
+    publishes for it."""
+    sink = RecordingSink()
+    text_queue = queue.Queue()
+    text_queue.put("first question")
+    text_queue.put("second question")
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk()] * 40),
+        text_queue=text_queue,
+        llm=FakeLLM(reply="a reply"),
+        followup_seconds=0,
+        transcript=sink,
+    )
+    orch._running = True
+
+    orch.step()
+
+    assert [event.text for event in sink.of(USER_FINAL)] == [
+        "first question",
+        "second question",
+    ]
+
+
+def test_a_first_voice_turn_publishes_its_question_exactly_once():
+    sink = RecordingSink()
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk()] * 40),
+        wake_word=FakeWakeWord([True]),
+        vad=FakeVAD([True, False]),
+        stt=FakeSTT("only question"),
+        llm=FakeLLM("a reply"),
+        clock=FakeClock(tick=100.0),
+        transcript=sink,
+    )
+    orch._running = True
+
+    orch.step()
+
+    assert [event.text for event in sink.of(USER_FINAL)] == ["only question"]
+
+
+def test_a_first_typed_turn_publishes_its_question_exactly_once():
+    sink = RecordingSink()
+    text_queue = queue.Queue()
+    text_queue.put("only question")
+    orch = _make_orchestrator(
+        audio_source=FakeAudioSource([_chunk()] * 40),
+        text_queue=text_queue,
+        llm=FakeLLM("a reply"),
+        clock=FakeClock(tick=100.0),
+        transcript=sink,
+    )
+    orch._running = True
+
+    orch.step()
+
+    assert [event.text for event in sink.of(USER_FINAL)] == ["only question"]

@@ -516,3 +516,88 @@ Update `../../task.md`: check off `07-orchestrator`, mark all modules
 complete, and record the systemd enable/start commands used plus any
 end-to-end latency measured (wake word -> spoken answer, start to finish)
 so future performance work has a baseline.
+
+## Transcript event publishing (added 2026-09-12, for `08-transcript-ui`)
+
+The orchestrator became the producer for the on-screen conversation
+transcript. Two new optional constructor parameters, both defaulting to
+`None` so nothing changes for a caller that does not want the overlay —
+which is what let all 53 pre-existing tests here stay valid unmodified:
+
+- `transcript: TranscriptSink | None` — where the live conversation is
+  published (`shared/transcript.py`; the real implementation is
+  `transcript_ui.client.TranscriptClient`).
+- `partial_transcriber: PartialTranscriber | None` — `03-stt`'s
+  `StreamingTranscriber`, which turns speech-in-progress into the
+  `user_partial` events the overlay shows while the user is still talking.
+  Declared as a local `Protocol` rather than imported, like every other
+  cross-module dependency here.
+
+### Where the events come from
+
+| Event | Emit point | Note |
+|---|---|---|
+| `state` | `_set_status(..., state=)` | Folded into the existing call, so the overlay, the tray icon and the log are all driven by one call rather than three parallel notification paths |
+| `reset` | `_idle()`, on wake word or a typed question | A new conversation, as opposed to a follow-up |
+| `level` | `_observe_speech_frame()` | RMS of the frame, throttled to every 2nd frame (~16/sec) — far more than a few-pixel meter can show otherwise |
+| `user_partial` | *(indirect)* | `main.py` wires `StreamingTranscriber.on_partial` straight to the client; the orchestrator only calls `submit()` |
+| `user_final` | `_emit_user_text()`, from `_transcribe_and_log()` and both typed-question paths | Also `reset()`s the partial transcriber, so a late partial cannot overwrite it |
+| `assistant_delta` | `_log_deltas()` | The existing per-token debug hook turned out to be exactly the right seam |
+| `assistant_final` | `_think_and_speak()`'s `finally` | In the `finally` deliberately: a reply cut short by `stop_generating()` or abandoned on an exception still has to close its turn, or the overlay is left showing a streaming caret forever and never fades out |
+
+Note the deliberate asymmetry with `_speak()`: that buffers into whole
+sentences because Piper needs one to sound natural, but text on screen has
+no such constraint, so the overlay gets the real token stream and shows the
+reply arriving *ahead* of the sentence currently being spoken.
+
+### Safety
+
+`_emit()` wraps every publish in `try/except` — the same discipline
+`TrayApp.set_status` already uses for its tooltip. These call sites are the
+pipeline's hot paths (per mic frame, per LLM token), and a transcript
+overlay that is wedged, misbehaving or half-dead must never be able to
+interrupt an actual conversation. `TranscriptSink`'s contract already says
+implementations must not raise; this is the belt to that braces, and there
+is a test (`test_a_throwing_transcript_sink_cannot_break_a_conversation`)
+proving a turn completes normally against a sink that raises on every call.
+
+`_observe_speech_frame()` is shared by `_listen()` and `_await_followup()`
+so the two recording paths cannot drift apart.
+
+### main.py wiring
+
+`_build_transcript_stack()` assembles the three pieces and hands them back
+for `main()` to wire in and tear down. All three degrade independently:
+overlay disabled in config → a `NullTranscriptClient` that discards
+everything (so no `if enabled` guard is needed at any call site);
+`stt.partials` off → no live preview but the final transcript still
+appears; `autostart` off or no display → no child process, and the client
+simply finds nothing on the socket and drops events until the user starts
+`python -m transcript_ui` themselves.
+
+Teardown order in `main()`'s `finally`: mic, then partials, then the
+client, then the overlay process — so nothing is still trying to emit into
+a closed socket.
+
+### Bug: duplicate `user_final` on a spoken follow-up (found 2026-09-12)
+
+The user reported, with a screenshot, that a spoken follow-up drew its
+question as two identical "You" rows in the overlay. `step()`'s follow-up
+branch had `self._emit_user_text(text)` at the wrong indentation - outside
+its `if/else` rather than inside the `else` - so the voice path published
+`user_final` twice: once from `_transcribe_and_log()`, which already
+publishes whatever it transcribed, and once from the stray call. The typed
+path was correct, since nothing else publishes for it. First turns were
+also unaffected, because that branch was written separately.
+
+The lesson for the tests here: the existing follow-up tests drove `step()`
+but asserted only on `llm.calls`, and the existing transcript tests
+asserted on events but called `_transcribe_and_log` in isolation - so no
+test ever counted transcript events across a whole multi-turn
+conversation. Four now do, one per path
+(`test_a_voice_followup_publishes_its_question_exactly_once`,
+`..._typed_followup...`, `..._first_voice_turn...`, `..._first_typed_turn...`),
+and the voice one was verified to fail against the old code before the fix
+landed.
+
+Covered by 15 new tests in `tests/test_state_machine.py`.

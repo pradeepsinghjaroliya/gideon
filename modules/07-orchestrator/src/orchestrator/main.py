@@ -12,16 +12,21 @@ import queue
 import signal
 import threading
 
+from shared.config import TranscriptUiConfig
 from shared.config import load_config
 from shared.logging_setup import setup_logging
+from shared.transcript import USER_PARTIAL, TranscriptEvent
 
 from audio_io.sink import SpeakerAudioSink
 from audio_io.source import MicAudioSource
 from audio_io.vad import SileroVAD
 from llm_client.ollama_client import OllamaClient
 from stt.engine import FasterWhisperEngine
+from stt.streaming import StreamingTranscriber
 from text_input.dashboard import DashboardControl, DashboardSlider
 from text_input.tray import TrayApp
+from transcript_ui.client import NullTranscriptClient, TranscriptClient
+from transcript_ui.launcher import OverlayProcess
 from tts.engine import PiperEngine
 from wake_word.detector import OpenWakeWordDetector
 
@@ -111,6 +116,47 @@ def _build_volume_control(orchestrator_ref: list[Orchestrator]) -> DashboardSlid
     )
 
 
+def _build_transcript_stack(config, log):
+    """Assemble the on-screen transcript overlay's three pieces and hand
+    them back for `main()` to wire in and tear down.
+
+    Returns `(transcript_client, partial_transcriber, overlay_process)`.
+    All three degrade independently and none of them is required:
+
+    - overlay switched off in config -> a `NullTranscriptClient` that
+      discards events, so the orchestrator needs no `if enabled` guard;
+    - `stt.partials` off (or the tiny model unavailable) -> no live
+      word-by-word preview, but the final transcript still appears;
+    - `autostart` off, or no display -> no child process, and the client
+      simply finds nothing listening on the socket and drops events until
+      the user starts `python -m transcript_ui` themselves.
+    """
+    ui: TranscriptUiConfig = config.transcript_ui
+    if not ui.enabled:
+        log.info("transcript overlay disabled in config")
+        return NullTranscriptClient(), None, None
+
+    transcript = TranscriptClient(socket_path=ui.socket_path, logger=log)
+
+    partials = None
+    if config.stt.partials:
+        partials = StreamingTranscriber(
+            model_size=config.stt.partial_model_size,
+            device=config.stt.device,
+            sample_rate=config.audio.sample_rate,
+            # The transcriber knows nothing about transcript events or
+            # sockets - it just reports text, and this closure is what
+            # turns that into something the overlay understands.
+            on_partial=lambda text: transcript.emit(
+                TranscriptEvent(kind=USER_PARTIAL, text=text)
+            ),
+            logger=log,
+        )
+
+    overlay = OverlayProcess(socket_path=ui.socket_path, logger=log) if ui.autostart else None
+    return transcript, partials, overlay
+
+
 def main() -> None:
     log = setup_logging("orchestrator")
     config = load_config()
@@ -129,6 +175,8 @@ def main() -> None:
     tts = PiperEngine(voice=config.tts.voice)
 
     text_queue: queue.Queue[str] = queue.Queue()
+
+    transcript, partials, overlay = _build_transcript_stack(config, log)
 
     llm_control = OllamaControl(base_url=config.llm.base_url)
     orchestrator_ref: list[Orchestrator] = []
@@ -161,6 +209,8 @@ def main() -> None:
         logger=log,
         on_status=tray_app.set_status,
         on_state=tray_app.set_icon_state,
+        transcript=transcript,
+        partial_transcriber=partials,
     )
     orchestrator_ref.append(orchestrator)
 
@@ -175,12 +225,27 @@ def main() -> None:
     audio_source.start()
     tray_thread.start()
 
+    # Overlay first, then the client: the client's sender thread retries
+    # with a backoff anyway, so the order is not load-bearing, but starting
+    # the listener first means the very first event of the session usually
+    # lands instead of being dropped during the initial connect.
+    if overlay is not None:
+        overlay.start()
+    transcript.start()
+    if partials is not None:
+        partials.start()
+
     log.info("ready - say the wake word or use the tray icon's 'Ask...'")
     try:
         orchestrator.run_forever()
     finally:
         log.info("stopping mic")
         audio_source.stop()
+        if partials is not None:
+            partials.stop()
+        transcript.close()
+        if overlay is not None:
+            overlay.stop()
 
 
 if __name__ == "__main__":
