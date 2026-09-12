@@ -2,7 +2,7 @@
 
 These are structural (typing.Protocol) contracts, not base classes -
 implementations do not need to subclass anything, they just need to match
-the method signatures. See ARCHITECTURE.md for the full pipeline context.
+the method signatures. See docs/ARCHITECTURE.md for the full pipeline context.
 
 Audio convention: unless documented otherwise, audio arrays are mono
 int16 numpy arrays at 16kHz.

@@ -14,7 +14,7 @@ itself).
 ## Interfaces implemented
 
 `AudioSource`, `AudioSink`, `VoiceActivityDetector` (see
-`../../ARCHITECTURE.md`).
+`../../docs/ARCHITECTURE.md`).
 
 ## Recommended libraries
 
@@ -230,5 +230,5 @@ multi-second stall are gone, replaced by a near-instant, silent stop.
 
 ## When done
 
-Update `../../task.md`: check off `01-audio-io`, record the mute contract
+Update `../../docs/task.md`: check off `01-audio-io`, record the mute contract
 and VAD silence threshold chosen.

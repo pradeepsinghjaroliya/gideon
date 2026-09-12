@@ -770,3 +770,28 @@ live partial; speaking state with the reply streaming). **Not yet
 confirmed**: the GNOME/KDE re-exec *trigger* (this machine has layer-shell,
 so it never fires — the X11 path it targets is verified), and the
 no-compositor `no-alpha` styling.
+
+## Repo layout + `scripts/dev.sh` (2026-09-13, requested by the user)
+
+Two housekeeping changes, neither touching any module's code:
+
+- **New `scripts/dev.sh`** — one command to run the whole thing locally in
+  the foreground. It existed only as a sequence of RUNBOOK steps before, and
+  the parts that are easy to get wrong (the openWakeWord `--no-deps`
+  install, the PyTorch CPU index, stopping `gideon.service` so two copies
+  don't fight over the mic, starting `ollama serve`) were all manual. It
+  also fails fast on the self-inheriting `~/.icons/default` cursor theme
+  that `nwg-look` can write: that segfaults every GTK3 Wayland app at
+  display open and shows up here as a pystray/Gdk traceback that sends you
+  debugging the wrong code entirely. Flags: `--setup`, `--tests`,
+  `--no-ollama`, `--check`. Documented in `RUNBOOK.md`.
+- **Docs moved into `docs/`** — `ARCHITECTURE.md`, `RUNBOOK.md` and this
+  file now live under `docs/`; `README.md` stays at the repo root as the
+  landing page. Every cross-reference was updated: module `plan.md` files
+  now point at `../../docs/ARCHITECTURE.md`, and source docstrings use the
+  repo-root-relative `docs/ARCHITECTURE.md` (several previously said
+  `../../ARCHITECTURE.md` from inside `src/`, which never resolved).
+
+**Confirmed on real hardware 2026-09-13**: `scripts/dev.sh` run end to end —
+preflight passed, overlay came up on the layer-shell backend, reached
+`ready`, and a full wake→STT→LLM→TTS turn completed before `Ctrl+C`.

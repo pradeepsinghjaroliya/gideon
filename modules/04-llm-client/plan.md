@@ -15,7 +15,7 @@ module manages.
 
 ## Interface implemented
 
-`LLMClient` (see `../../ARCHITECTURE.md`).
+`LLMClient` (see `../../docs/ARCHITECTURE.md`).
 
 ## Recommended library
 
@@ -128,7 +128,7 @@ anything (see `07-orchestrator/plan.md`'s "Streaming replies" section for
 the full design). The user's ask: "user has to wait for whole LLM output
 to be generated... doesn't feel natural, can we do streaming."
 
-Added to `OllamaClient` (and to `LLMClient`/`ARCHITECTURE.md`'s shared
+Added to `OllamaClient` (and to `LLMClient`/`../../docs/ARCHITECTURE.md`'s shared
 contract):
 
 - `generate_stream(prompt, history) -> Iterator[str]` - calls the same
@@ -156,5 +156,5 @@ in-progress Ollama request rather than just a scripted test double.
 
 ## When done
 
-Update `../../task.md`: check off `04-llm-client`, record the chosen model
+Update `../../docs/task.md`: check off `04-llm-client`, record the chosen model
 and measured response latency.

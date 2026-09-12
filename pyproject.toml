@@ -15,7 +15,7 @@ dev = ["pytest>=7.0"]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
-# Packaging convention (see modules/00-shared/plan.md and ARCHITECTURE.md):
+# Packaging convention (see modules/00-shared/plan.md and docs/ARCHITECTURE.md):
 # each module's src/ directory hosts exactly one top-level importable
 # package. Register it here so `pip install -e .` (once, from repo root)
 # makes every module importable everywhere, e.g. `from shared.interfaces

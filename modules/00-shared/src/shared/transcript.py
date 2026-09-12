@@ -3,7 +3,7 @@
 (`08-transcript-ui`, which draws the on-screen overlay).
 
 Lives here, next to `interfaces.py`, for the same reason every other
-cross-module contract does (see ARCHITECTURE.md): the orchestrator must be
+cross-module contract does (see docs/ARCHITECTURE.md): the orchestrator must be
 able to emit these without importing any UI code, and the UI must be able
 to render them without importing any pipeline code. Neither side depends
 on the other - both depend on this.

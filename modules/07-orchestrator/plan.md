@@ -3,7 +3,7 @@
 ## Goal
 
 Wire every other module together into the actual background assistant: run
-the state machine described in `../../ARCHITECTURE.md`, manage the
+the state machine described in `../../docs/ARCHITECTURE.md`, manage the
 conversation history, and run as a proper background service on login.
 
 **Build this last** — it depends on every other module being done (or at
@@ -18,7 +18,7 @@ least stable enough to import).
 
 - `src/orchestrator/state_machine.py` — implements the `IDLE -> LISTENING
   -> TRANSCRIBING -> THINKING -> SPEAKING -> IDLE` loop from
-  `ARCHITECTURE.md`:
+  `../../docs/ARCHITECTURE.md`:
   - `IDLE`: feed mic frames to the wake-word detector; also watch for a
     text-input submission (run the tray icon on its own thread/process and
     check a queue) — either one moves to the next state.
@@ -116,7 +116,7 @@ doesn't appear after `systemctl --user start`, check
   originally sketched. This relies on Tkinter working from a non-main
   thread, which `06-text-input`'s own plan.md flagged as a macOS
   restriction, not a Linux one — fine for this Ubuntu-only project.
-- **Barge-in: deferred**, per `../../ARCHITECTURE.md`'s open
+- **Barge-in: deferred**, per `../../docs/ARCHITECTURE.md`'s open
   cross-cutting decision — not implemented. Mic is simply muted for the
   full `SPEAKING` duration (`AudioSink.play()` blocks until done), so
   talking over the assistant does nothing yet; `AudioSink.stop()` exists
@@ -146,7 +146,7 @@ in `journalctl --user -u gideon.service` for debugging.
 
 After a first real-hardware run, the user asked not to require the wake
 word again immediately for a follow-up question. Added an
-`AWAITING_FOLLOWUP` phase (see `../../ARCHITECTURE.md`'s state machine
+`AWAITING_FOLLOWUP` phase (see `../../docs/ARCHITECTURE.md`'s state machine
 diagram) between SPEAKING and true IDLE: for `config.orchestrator.
 followup_seconds` (default 10s), `Orchestrator._await_followup()` watches
 for either speech (via VAD, no wake word needed - detected the same way
@@ -238,7 +238,7 @@ new `Orchestrator` method per control:
 - **Stop speaking** (`Orchestrator.stop_speaking`/`is_speaking`, enabled
   only while actually speaking): calls `AudioSink.stop()` (the
   interrupt/barge-in hook `01-audio-io` always had, per
-  `../../ARCHITECTURE.md`, but never previously used) from the tray
+  `../../docs/ARCHITECTURE.md`, but never previously used) from the tray
   thread while `_speak()` blocks the main loop on `play()`. `_speak()`
   tracks a `_stop_requested` flag (reset to `False` *before* `_speaking`
   goes `True`, to close a narrow cross-thread race) so it can tell "the
@@ -512,7 +512,7 @@ latency).
 
 ## When done
 
-Update `../../task.md`: check off `07-orchestrator`, mark all modules
+Update `../../docs/task.md`: check off `07-orchestrator`, mark all modules
 complete, and record the systemd enable/start commands used plus any
 end-to-end latency measured (wake word -> spoken answer, start to finish)
 so future performance work has a baseline.

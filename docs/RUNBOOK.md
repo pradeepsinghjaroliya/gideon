@@ -1,13 +1,74 @@
 # Running and updating Gideon
 
-Day-to-day operator notes — starting it back up, and rebuilding/testing after
-a code change. See `README.md`/`ARCHITECTURE.md` for the design, `task.md`
-for progress.
+Day-to-day operator notes — running it locally while you work on it,
+starting it back up, and rebuilding/testing after a code change. See
+`../README.md`/`ARCHITECTURE.md` for the design, `task.md` for progress.
+
+Two ways to run it, for two different purposes: `scripts/dev.sh` in a
+terminal while you're changing the code, and `gideon.service` in the
+background the rest of the time. They both drive the same
+`python -m orchestrator.main`, and only one of them can hold the mic and
+tray at a time.
+
+## Running it locally with `scripts/dev.sh`
+
+The development entry point: it runs Gideon in the *foreground*, attached to
+your terminal, so log lines and exceptions land where you can read them
+immediately. `Ctrl+C` stops it.
+
+```
+scripts/dev.sh
+```
+
+Before starting anything it does the setup and preflight work that is
+otherwise easy to forget:
+
+- **Venv and dependencies** — creates `.venv` if it is missing and installs
+  everything, including the two awkward cases the plain `pip install -r`
+  path gets wrong: `01-audio-io`'s torch/torchaudio from PyTorch's CPU wheel
+  index, and `02-wake-word`'s openWakeWord via `--no-deps` (its declared
+  `tflite-runtime` has no Python 3.12 wheel and the ONNX backend is forced
+  anyway). On later runs it only checks that `orchestrator.main` imports.
+- **openWakeWord's feature extractors** — downloaded once if absent. They
+  are not in the pip wheel, and the committed `hey_gideon.onnx` still needs
+  them.
+- **Preflight** — config present; the configured wake-word model present;
+  `sounddevice` and GTK 3 importable, each with the exact `apt` line if not.
+- **Cursor-theme check** — a self-inheriting `~/.icons/default`
+  (`Inherits=default`, which `nwg-look` can write) segfaults *every* GTK3
+  Wayland app at display open, and surfaces here as a misleading
+  pystray/Gdk traceback. The script refuses to start and names the file
+  rather than letting you debug the Python.
+- **Gets the service out of the way** — stops `gideon.service` if it is
+  running (it would otherwise be holding the mic and tray), and reminds you
+  to start it again afterwards. Also warns if another `orchestrator.main` is
+  already running.
+- **Ollama** — reads `llm.base_url`/`llm.model` from `config/config.yaml`,
+  starts `ollama serve` detached if nothing is answering, waits for it, and
+  warns if the configured model has not been pulled.
+
+Flags:
+
+```
+scripts/dev.sh --setup       # force a dependency (re)install first
+scripts/dev.sh --tests       # run the unit tests first, then start
+scripts/dev.sh --no-ollama   # leave Ollama alone even if it is down
+scripts/dev.sh --check       # preflight only - don't start Gideon
+scripts/dev.sh --help
+```
+
+`--check` is the one to reach for when something is wrong but you are not
+sure what: it prints the same diagnosis and exits without touching the mic.
 
 ## Starting it again after "Quit"
 
 Gideon runs as a systemd **user** service (`gideon.service`), already
-installed and enabled to start automatically on every login. Clicking "Quit"
+installed and enabled to start automatically on every login. (On a machine
+where it was never installed — `systemctl --user status gideon.service` says
+it can't find the unit — skip this section; `scripts/dev.sh` runs Gideon
+without it, and the unit file under
+`modules/07-orchestrator/systemd/` has absolute paths that need to match the
+checkout before it is copied into `~/.config/systemd/user/`.) Clicking "Quit"
 in the tray menu only stops the *current* run — it doesn't disable the
 service, so the easiest way back is:
 
@@ -47,6 +108,8 @@ install, so most changes just need the service restarted to pick them up.
    ```
    .venv/bin/python -m pytest modules/ -q
    ```
+   (`scripts/dev.sh --tests` runs these and then starts Gideon in the
+   foreground, if you want both in one command.)
 4. **Restart the service** so it picks up the change:
    ```
    systemctl --user restart gideon.service
@@ -63,18 +126,28 @@ install, so most changes just need the service restarted to pick them up.
 
 ### If you'd rather test without the service running
 
-Stop the service first so it isn't also holding the mic/tray, then run it
-directly in a terminal (handy for reading exceptions immediately or using
-`--voice`/other demo-script flags on individual modules):
+Use `scripts/dev.sh` (above) — it stops the service for you, runs the
+preflight, and starts Gideon in the terminal. `Ctrl+C` stops it; start the
+service again afterwards so it goes back to running in the background:
+
+```
+scripts/dev.sh
+# ... Ctrl+C when done ...
+systemctl --user start gideon.service
+```
+
+The equivalent by hand, if you want to skip the preflight entirely or need
+to pass something unusual to the interpreter:
 
 ```
 systemctl --user stop gideon.service
 .venv/bin/python -m orchestrator.main
 ```
 
-`Ctrl+C` stops it. Start the service again afterwards (`systemctl --user
-start gideon.service`) so it goes back to running normally in the
-background.
+Individual modules also have their own demo scripts (e.g.
+`wake_word.listen_demo`, `stt.transcribe_file`, `llm_client.chat_demo`,
+`tts.speak_demo`, `text_input.tray_demo`) for exercising one stage on its
+own without the whole pipeline.
 
 ### If you changed the systemd unit file itself
 

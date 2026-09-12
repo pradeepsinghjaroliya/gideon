@@ -1,7 +1,7 @@
 """Tk popup implementing `shared.interfaces.TextInputProvider`.
 
 `get_text()` blocks until the user submits (Enter or the button) or closes
-the window - see `../../ARCHITECTURE.md`.
+the window - see `docs/ARCHITECTURE.md`.
 """
 
 from __future__ import annotations

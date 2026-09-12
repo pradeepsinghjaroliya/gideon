@@ -11,7 +11,7 @@ responsive.
 
 ## Interface implemented
 
-`STTEngine` (see `../../ARCHITECTURE.md`).
+`STTEngine` (see `../../docs/ARCHITECTURE.md`).
 
 ## Recommended library
 
@@ -117,7 +117,7 @@ downloaded samples.
 
 ## When done
 
-Update `../../task.md`: check off `03-stt`, record the chosen model size
+Update `../../docs/task.md`: check off `03-stt`, record the chosen model size
 and the measured latency.
 
 ## Live partial transcription (added 2026-09-12, for `08-transcript-ui`)

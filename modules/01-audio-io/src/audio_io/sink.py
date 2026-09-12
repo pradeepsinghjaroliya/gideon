@@ -1,7 +1,7 @@
 """Speaker playback implementing `shared.interfaces.AudioSink`.
 
 TTS engines produce audio at their own native rate (Piper: commonly
-22050 Hz); per ARCHITECTURE.md this module resamples to the output
+22050 Hz); per docs/ARCHITECTURE.md this module resamples to the output
 device's native rate before playback, so producers don't need to care.
 """
 

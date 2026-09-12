@@ -10,7 +10,7 @@ Turn the LLM's text response into speech audio, locally and fast.
 
 ## Interface implemented
 
-`TTSEngine` (see `../../ARCHITECTURE.md`).
+`TTSEngine` (see `../../docs/ARCHITECTURE.md`).
 
 ## Recommended library
 
@@ -24,7 +24,7 @@ suitable for CPU.
   voice named in `config.tts.voice` once at construction,
   `synthesize(text)` returns `(audio: np.ndarray int16, sample_rate: int)`
   at Piper's native output rate for that voice (do not resample here — see
-  `../../ARCHITECTURE.md`, resampling for playback is `01-audio-io`'s job).
+  `../../docs/ARCHITECTURE.md`, resampling for playback is `01-audio-io`'s job).
 - A standalone CLI (`src/tts/speak_demo.py "some text")` that synthesizes
   and plays the result directly (fine to do a quick-and-dirty playback here
   just for this module's own test, even though `01-audio-io` owns playback
@@ -92,7 +92,7 @@ themselves via `speak_demo.py --voice <name>` and picked `en_US-lessac-high`
 - sounds better than the two `-medium` voices, and confirmed it "works
 fine" despite the ~4.2s synthesis time measured above (vs. ~0.6-0.8s for
 the `-medium` voices). `config.tts.voice` (and its dataclass default in
-`shared/config.py`, and the example in `ARCHITECTURE.md`) updated to
+`shared/config.py`, and the example in `../../docs/ARCHITECTURE.md`) updated to
 `en_US-lessac-high` accordingly. `05-tts` is fully done, not just
 self-tested.
 
@@ -110,5 +110,5 @@ self-tested.
 
 ## When done
 
-Update `../../task.md`: check off `05-tts`, record the chosen voice and
+Update `../../docs/task.md`: check off `05-tts`, record the chosen voice and
 measured synthesis latency.

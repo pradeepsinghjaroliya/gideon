@@ -9,7 +9,7 @@ here — this module is pure plumbing.
 ## Deliverables
 
 - `src/shared/interfaces.py` — the `Protocol`/`ABC` classes listed in
-  `../../ARCHITECTURE.md` under "Interfaces", turned into real Python code
+  `../../docs/ARCHITECTURE.md` under "Interfaces", turned into real Python code
   (use `typing.Protocol` so implementations don't need to subclass anything,
   just match the shape).
 - `src/shared/config.py` — loads `config/config.yaml` into a typed structure
@@ -21,13 +21,13 @@ here — this module is pure plumbing.
   that configures a consistent log format so every module's standalone test
   script and the orchestrator log the same way.
 - `config/config.yaml` at the repo root — the actual file, seeded with the
-  sketch from `ARCHITECTURE.md` (placeholder values are fine; other modules
+  sketch from `../../docs/ARCHITECTURE.md` (placeholder values are fine; other modules
   will fill in real values as they're built).
 - Decide and document the Python packaging approach so
   `from shared.interfaces import STTEngine` works from any module's code
   without hacks (e.g. a single `pyproject.toml`/`setup.cfg` at repo root with
   an editable install, or a `PYTHONPATH` convention documented here and in
-  `ARCHITECTURE.md`). Whatever you pick, every later module's plan.md assumes
+  `../../docs/ARCHITECTURE.md`). Whatever you pick, every later module's plan.md assumes
   it just works — so get this right first.
 
 ## Standalone test plan
@@ -51,6 +51,6 @@ No hardware/audio involved, so this is pure unit-testable:
 
 ## When done
 
-Update `../../task.md`: check off `00-shared`, and note the packaging
+Update `../../docs/task.md`: check off `00-shared`, and note the packaging
 approach you chose (editable install vs. PYTHONPATH) so later sessions know
 how to import shared code.

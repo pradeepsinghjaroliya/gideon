@@ -14,7 +14,7 @@ match the same audio format (int16 mono 16kHz) so it slots into
 
 ## Interface implemented
 
-`WakeWordDetector` (see `../../ARCHITECTURE.md`).
+`WakeWordDetector` (see `../../docs/ARCHITECTURE.md`).
 
 ## Recommended library
 
@@ -206,5 +206,5 @@ false-positives/hour from the held-out validation set (well above the
 
 ## When done
 
-Update `../../task.md`: check off `02-wake-word`, record the chosen wake
+Update `../../docs/task.md`: check off `02-wake-word`, record the chosen wake
 phrase/model and the measured false-positive behavior.

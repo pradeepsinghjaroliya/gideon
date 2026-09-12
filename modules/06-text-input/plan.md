@@ -12,7 +12,7 @@ loud) or for quick testing without touching the mic pipeline at all.
 
 ## Interface implemented
 
-`TextInputProvider` (see `../../ARCHITECTURE.md`).
+`TextInputProvider` (see `../../docs/ARCHITECTURE.md`).
 
 ## Recommended approach
 
@@ -315,5 +315,5 @@ playback volume.
 
 ## When done
 
-Update `../../task.md`: check off `06-text-input`, record any tray-icon
+Update `../../docs/task.md`: check off `06-text-input`, record any tray-icon
 extension dependency discovered.

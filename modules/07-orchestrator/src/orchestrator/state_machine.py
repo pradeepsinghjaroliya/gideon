@@ -1,5 +1,5 @@
 """The `IDLE -> LISTENING -> TRANSCRIBING -> THINKING -> SPEAKING -> IDLE`
-loop from `../../ARCHITECTURE.md`, wiring every other module's interface
+loop from `docs/ARCHITECTURE.md`, wiring every other module's interface
 together.
 
 Each state is its own method so tests can drive/inspect them individually
@@ -352,7 +352,7 @@ class Orchestrator:
         speaking" action - e.g. the LLM produced a long-winded answer and
         the user doesn't want to keep listening to it. Safe to call from
         another thread while `_speak()` blocks the main loop on
-        `AudioSink.play()`, per `../../ARCHITECTURE.md`'s `AudioSink.stop()`
+        `AudioSink.play()`, per `docs/ARCHITECTURE.md`'s `AudioSink.stop()`
         contract. `_speak()` treats the resulting interruption (if any -
         depends on the sink's `stop()`/`play()` implementation) as a normal
         end to SPEAKING, not an error, so the conversation still proceeds

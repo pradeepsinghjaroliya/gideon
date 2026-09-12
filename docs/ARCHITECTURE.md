@@ -167,8 +167,12 @@ it should not assume other sections exist.
 ```
 gideon/
   README.md
-  ARCHITECTURE.md
-  task.md
+  docs/
+    ARCHITECTURE.md
+    RUNBOOK.md       # running it day-to-day, rebuilding after a change
+    task.md
+  scripts/
+    dev.sh           # run the whole thing locally, in the foreground
   config/
     config.yaml
   modules/

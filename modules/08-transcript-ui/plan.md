@@ -242,5 +242,5 @@ layerrule = ignorealpha 0.2, gideon-transcript
 
 ## When done
 
-Update `../../task.md`: check off `08-transcript-ui`, and note the
+Update `../../docs/task.md`: check off `08-transcript-ui`, and note the
 `gtk-layer-shell` system package as an optional (wlroots-only) dependency.

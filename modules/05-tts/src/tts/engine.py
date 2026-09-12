@@ -2,7 +2,7 @@
 
 Wraps Piper. `synthesize()` returns the shared int16 mono `np.ndarray` audio
 convention at the voice's native sample rate - resampling for playback is
-`01-audio-io`'s job, not this module's (see `../../ARCHITECTURE.md`).
+`01-audio-io`'s job, not this module's (see `docs/ARCHITECTURE.md`).
 """
 
 from __future__ import annotations
