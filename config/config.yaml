@@ -17,6 +17,12 @@ stt:
   backend: faster_whisper
   model_size: small
   device: cpu
+  # Live word-by-word preview while you're still speaking, shown by the
+  # transcript overlay below. Uses a second, smaller model so it can keep
+  # up in real time; the `model_size` model above still produces the final,
+  # accurate transcript. Set `partials: false` to reclaim the CPU.
+  partials: true
+  partial_model_size: tiny
 
 llm:
   backend: ollama
@@ -30,6 +36,19 @@ tts:
 
 text_input:
   hotkey: null
+
+# On-screen conversation transcript, pinned to the bottom of the screen.
+# Appears when the wake word fires, streams both sides of the conversation
+# live, and fades out once Gideon has been idle for `hide_after_seconds`.
+transcript_ui:
+  enabled: true
+  autostart: true          # orchestrator starts/stops the overlay process
+  socket_path: null        # null = $XDG_RUNTIME_DIR/gideon-transcript.sock
+  width: 720               # px, capped at 55% of the monitor width
+  bottom_margin: 48        # px above the bottom edge of the screen
+  max_turns: 4             # transcript lines kept on screen
+  typewriter_cps: 55.0     # reveal speed for streamed replies
+  hide_after_seconds: 4.0
 
 orchestrator:
   history_turns: 6

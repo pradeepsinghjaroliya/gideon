@@ -119,3 +119,70 @@ downloaded samples.
 
 Update `../../task.md`: check off `03-stt`, record the chosen model size
 and the measured latency.
+
+## Live partial transcription (added 2026-09-12, for `08-transcript-ui`)
+
+The transcript overlay needed the user's words on screen *while they are
+still speaking*, not only once the utterance is finished. `transcribe()` is
+a one-shot by design — hand it a complete utterance, get the text — so
+nothing could be shown for the second or two between the user stopping and
+`small` finishing.
+
+Added `src/stt/streaming.py`:
+
+- `StreamingTranscriber` — owns a **second, deliberately small** model
+  (`tiny` by default, `stt.partial_model_size` in config) and
+  re-transcribes the growing audio buffer on a worker thread, publishing
+  each result through an `on_partial(text)` callback. The main `model_size`
+  model still produces the authoritative transcript, which supersedes the
+  last partial — so accuracy is untouched and only the *preview* is cheap.
+- Built on the existing `FasterWhisperEngine` rather than re-wrapping
+  faster-whisper, and takes an `engine` injection seam like every other
+  module here (`model_fn`/`synth_fn`/`post_fn`), so the tests need no real
+  model.
+
+Two properties drove the whole design, because the caller is
+`07-orchestrator`'s per-mic-frame loop:
+
+1. **`submit()` never blocks.** Whisper inference is orders of magnitude
+   slower than the 30ms frame cadence, so anything else would stall audio
+   capture. It drops a snapshot into a single-slot mailbox and returns.
+2. **Latest wins; stale snapshots are discarded.** The mailbox holds one
+   snapshot, not a queue. A queue would build a backlog the worker could
+   never catch up on, and every partial drawn would fall further behind
+   what the user is actually saying — nobody wants a stale partial, they
+   want the newest one. It also makes the thing self-pacing: partials
+   arrive as fast as the model can produce them and no faster, with no
+   polling interval to guess at.
+
+Other decisions worth recording:
+
+- **The model is loaded lazily, on the worker thread, on first use.**
+  Loading whisper weights takes seconds; doing it eagerly would delay
+  orchestrator startup, and a missing or corrupt `tiny` model would stop
+  the assistant from starting at all rather than just costing it previews.
+- **A failure disables partials permanently and quietly.** The realistic
+  causes (missing weights, no disk space for the download, an unsupported
+  compute type) are all persistent, so retrying would mean a stack trace
+  per mic frame for the rest of the session. Live previews are a nicety;
+  losing them must never be louder than it is important.
+- **No audio below `min_audio_seconds` (0.6s) is submitted.** Whisper pads
+  short input and reliably returns either nothing or a hallucinated filler
+  word ("Thank you.", "...") below roughly half a second, which looks worse
+  on screen than showing nothing at all.
+- **Identical text is not republished**, since repainting the same string
+  would restart the overlay's typewriter animation for no reason.
+- **`reset()` invalidates in-flight work by generation counter**, so a
+  partial still mid-inference when a turn ends cannot overwrite the final
+  transcript or leak into the next turn.
+
+Config: `stt.partials` (default `true`) and `stt.partial_model_size`
+(default `tiny`). Setting `partials: false` reclaims the CPU and RAM (~75MB
+for `tiny`) and the overlay simply shows the user's words in one go when
+the main model finishes, as it did before this existed.
+
+Covered by `tests/test_streaming.py` (14 tests) — including that stale
+submissions really are dropped, that `submit()` does not block a busy
+worker, that the submitted buffer is copied (the orchestrator keeps
+appending to its own frame list), and that a permanent engine failure is
+not retried.

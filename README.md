@@ -10,9 +10,15 @@ Everything runs locally on open-source components. No cloud APIs.
 
 ```
 [wake word] --> [audio capture + VAD] --> [speech-to-text] --> [local LLM] --> [text-to-speech] --> [playback]
-                        ^                                                                                |
-                        |________________________ mic gated while speaking ________________________|
-[popup/tray text input] -------------------------------------------------------------------------> (skips STT, feeds LLM directly)
+                        ^                                                                              |
+                        |____________________ mic gated while speaking _________________________|
+
+[popup/tray text input] ---------------------------------------------------------> (skips STT, feeds LLM directly)
+
+Every stage also reports what it heard/said to the transcript overlay - a
+minimal card pinned to the bottom of the screen showing the conversation as
+it happens (live partial transcripts while you speak, the reply streaming
+token-by-token as it is generated).
 ```
 
 ## Working model: one module, one session
@@ -71,6 +77,7 @@ module's directory and `pip install -r` it.
 | Local LLM | Ollama | Local HTTP API, swap models by name |
 | Text-to-speech | Piper | Fast, local, many voices |
 | Text input fallback | Tkinter/GTK popup or tray icon | For typing instead of speaking |
+| Transcript overlay | GTK3 + gtk-layer-shell | Bottom-of-screen live conversation transcript; falls back to X11/XWayland where layer-shell is unavailable |
 
 Every stage is behind an interface (see `ARCHITECTURE.md`) so a library can
 be swapped or replaced by a custom implementation later without touching the

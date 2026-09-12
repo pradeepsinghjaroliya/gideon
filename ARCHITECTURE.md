@@ -64,7 +64,44 @@ class TTSEngine(Protocol):
 
 class TextInputProvider(Protocol):
     def get_text(self) -> str | None: ...  # blocking; None if user cancelled
+
+class TranscriptSink(Protocol):
+    def emit(self, event: TranscriptEvent) -> None: ...
+    # Where the orchestrator publishes the live conversation for the
+    # on-screen transcript overlay (`08-transcript-ui`). The full contract
+    # and the `TranscriptEvent` type live in `shared/transcript.py`.
+    #
+    # Implementations MUST NOT raise and MUST NOT block: `emit` is called
+    # from the pipeline's hot paths - once per 30ms mic frame while
+    # listening, once per LLM token while replying - so a slow or throwing
+    # sink would stutter or break the actual conversation. The overlay is a
+    # nicety; the assistant working is not.
 ```
+
+## Transcript events
+
+`shared/transcript.py` defines a small, flat, JSON-serializable event type
+(`TranscriptEvent`) plus the `TranscriptSink` protocol above. It is flat
+rather than a class hierarchy because it crosses a process boundary - the
+overlay runs as its own process and reads newline-delimited JSON off a unix
+socket (see `08-transcript-ui/plan.md` for why).
+
+`kind` is the discriminator:
+
+| kind | carries | meaning |
+|---|---|---|
+| `state` | `state` | `idle`/`listening`/`processing`/`speaking`/`error` - the **same** symbolic vocabulary `on_state` already feeds the tray icon, deliberately not a second set of names |
+| `user_partial` | `text` | the user's speech transcribed while they are still talking; each one *replaces* the last, it is not an append |
+| `user_final` | `text` | the authoritative transcript of the finished utterance (or a typed question), superseding the last partial |
+| `assistant_delta` | `text` | one incremental chunk of the reply, straight from `LLMClient.generate_stream()` - appended |
+| `assistant_final` | `text` | the reply is complete; closes the turn |
+| `level` | `level` | mic loudness `0.0`-`1.0`, so the overlay can show it is hearing something before any words are decoded |
+| `reset` | - | a brand new conversation; clear the transcript |
+
+Note the asymmetry between `assistant_delta` and `AudioSink` playback:
+`_speak()` needs *whole sentences* for Piper to sound natural, but text on
+screen has no such constraint, so the overlay is fed the real token stream
+and shows the reply arriving ahead of the sentence currently being spoken.
 
 Each module's `plan.md` states which of these it implements and any extra
 methods it needs.
@@ -90,6 +127,8 @@ stt:
   backend: faster_whisper
   model_size: small
   device: cpu             # cpu | cuda
+  partials: true            # live word-by-word preview while still speaking
+  partial_model_size: tiny  # a second, smaller model just for that preview
 
 llm:
   backend: ollama
@@ -103,6 +142,16 @@ tts:
 
 text_input:
   hotkey: null            # e.g. a global hotkey to open the popup, or null = tray click only
+
+transcript_ui:           # on-screen conversation transcript (08-transcript-ui)
+  enabled: true
+  autostart: true        # orchestrator starts/stops the overlay process itself
+  socket_path: null      # null = $XDG_RUNTIME_DIR/gideon-transcript.sock
+  width: 720
+  bottom_margin: 48
+  max_turns: 4
+  typewriter_cps: 55.0
+  hide_after_seconds: 4.0
 
 orchestrator:
   history_turns: 6        # how many past turns to keep in LLM context
@@ -131,6 +180,7 @@ gideon/
     05-tts/            # TTSEngine
     06-text-input/     # TextInputProvider
     07-orchestrator/   # wires everything, systemd service, state machine
+    08-transcript-ui/  # on-screen live conversation transcript overlay
       <name>/
         plan.md
         src/           # created when the module is implemented
@@ -154,6 +204,12 @@ SPEAKING --(playback done)--> AWAITING_FOLLOWUP
 AWAITING_FOLLOWUP --(speech OR popup submitted within `followup_seconds`)--> (TRANSCRIBING if voice, else) THINKING
 AWAITING_FOLLOWUP --(nothing within `followup_seconds`)--> IDLE
 ```
+
+Every transition above also publishes a `state` transcript event (see
+"Transcript events") via the orchestrator's `TranscriptSink`, alongside the
+existing `on_status`/`on_state` tray callbacks - so the overlay, the tray
+icon and the log are all driven by the same single `_set_status` call
+rather than three parallel notification paths.
 
 Mic input is gated (ignored) during SPEAKING to avoid the assistant hearing
 itself. Popup text input skips LISTENING/TRANSCRIBING and enters THINKING

@@ -43,6 +43,14 @@ class SttConfig:
     backend: str = "faster_whisper"
     model_size: str = "small"
     device: str = "cpu"
+    # Live partial transcription, for the transcript overlay - a second,
+    # deliberately smaller model that re-transcribes speech while it is
+    # still being spoken, so words can appear on screen before the main
+    # `model_size` model has finished with the completed utterance. See
+    # `03-stt/src/stt/streaming.py`. Set `partials: false` to turn the
+    # feature (and its CPU cost) off entirely.
+    partials: bool = True
+    partial_model_size: str = "tiny"
 
 
 @dataclass
@@ -65,6 +73,29 @@ class TextInputConfig:
 
 
 @dataclass
+class TranscriptUiConfig:
+    """The on-screen conversation transcript overlay (`08-transcript-ui`).
+
+    `socket_path: None` means "work it out" - `$XDG_RUNTIME_DIR` if it
+    exists, a uid-qualified path under the temp dir otherwise (see
+    `transcript_ui/protocol.py`). Left as a knob mainly so two instances
+    can run side by side while developing.
+    """
+
+    enabled: bool = True
+    # Have the orchestrator start and stop the overlay process itself.
+    # Turn this off to run `python -m transcript_ui` by hand (or from a
+    # user systemd unit) while still feeding it from the orchestrator.
+    autostart: bool = True
+    socket_path: str | None = None
+    width: int = 720
+    bottom_margin: int = 48
+    max_turns: int = 4
+    typewriter_cps: float = 55.0
+    hide_after_seconds: float = 4.0
+
+
+@dataclass
 class OrchestratorConfig:
     history_turns: int = 6
     followup_seconds: float = 10.0
@@ -78,6 +109,7 @@ class Config:
     llm: LlmConfig = field(default_factory=LlmConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
     text_input: TextInputConfig = field(default_factory=TextInputConfig)
+    transcript_ui: TranscriptUiConfig = field(default_factory=TranscriptUiConfig)
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
 
 
@@ -88,6 +120,7 @@ _SECTION_BUILDERS = {
     "llm": LlmConfig,
     "tts": TtsConfig,
     "text_input": TextInputConfig,
+    "transcript_ui": TranscriptUiConfig,
     "orchestrator": OrchestratorConfig,
 }
 

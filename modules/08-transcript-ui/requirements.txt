@@ -1,0 +1,36 @@
+# The overlay is drawn with GTK 3 via PyGObject, which `06-text-input`
+# already depends on (pystray needs it for its AppIndicator backend), so
+# there is no *new* pip requirement here. Listed anyway because each
+# module's requirements.txt should be self-describing.
+#
+# Needs the system package `libgirepository-2.0-dev` present before the
+# pip install, or building PyGObject from source fails - same prerequisite
+# 06-text-input's requirements.txt documents.
+PyGObject>=3.50.0
+
+# pycairo: the level meter and status dot are drawn with cairo, and the
+# click-through input region is an (empty) cairo.Region. Normally pulled in
+# as a PyGObject dependency; pinned explicitly since this module imports
+# `cairo` directly rather than only through `gi`.
+pycairo>=1.20.0
+
+# --- system packages (not pip-installable) ---------------------------------
+#
+# GTK 3 itself, plus the introspection data PyGObject reads:
+#   Debian/Ubuntu:  sudo apt install python3-gi gir1.2-gtk-3.0
+#   Fedora:         sudo dnf install python3-gobject gtk3
+#   Arch:           sudo pacman -S python-gobject gtk3
+#
+# gtk-layer-shell - OPTIONAL, and only used on wlroots compositors
+# (Hyprland, Sway, river, wayfire, labwc). It is what lets the overlay
+# anchor itself to the bottom of the screen natively. Without it the
+# overlay still works: it falls back to the X11/XWayland backend (see
+# src/transcript_ui/surface.py). Install it for the best result there:
+#   Debian/Ubuntu:  sudo apt install gir1.2-gtklayershell-0.1
+#   Fedora:         sudo dnf install gtk-layer-shell
+#   Arch:           sudo pacman -S gtk-layer-shell
+#
+# Live partial transcription (words appearing as you speak) is provided by
+# 03-stt's StreamingTranscriber, so install that module's requirements too
+# if it is not already done - it needs no extra package beyond
+# faster-whisper, just a second (tiny) model, downloaded on first use.

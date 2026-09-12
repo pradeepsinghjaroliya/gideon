@@ -29,6 +29,17 @@ from shared.interfaces import (
     VoiceActivityDetector,
     WakeWordDetector,
 )
+from shared.transcript import (
+    ASSISTANT_DELTA,
+    ASSISTANT_FINAL,
+    LEVEL,
+    RESET,
+    STATE,
+    USER_FINAL,
+    USER_PARTIAL,
+    TranscriptEvent,
+    TranscriptSink,
+)
 
 
 class TextQueue(Protocol):
@@ -38,12 +49,51 @@ class TextQueue(Protocol):
     def get_nowait(self) -> str: ...
 
 
+class PartialTranscriber(Protocol):
+    """The slice of `03-stt`'s `StreamingTranscriber` this module uses.
+
+    Declared structurally here, rather than importing the class, for the
+    same reason every other cross-module dependency is a Protocol: it keeps
+    the orchestrator testable with a trivial fake and leaves `03-stt` free
+    to change its internals. `submit` is contractually non-blocking - it is
+    called from the mic loop, which must keep reading frames in real time.
+    """
+
+    def submit(self, audio: np.ndarray) -> None: ...
+
+    def reset(self) -> None: ...
+
+
 # Matches sentence-ending punctuation followed by whitespace (not at the
 # very end of the buffer, where more text may still be coming). Simple,
 # not NLP-grade - doesn't special-case abbreviations ("Mr.") or decimals
 # ("3.14") - which is fine here since it only controls where `_speak()`
 # chunk boundaries fall for streaming playback, not the reply text itself.
 _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?](?=[ \n\t])")
+
+# Mic-level events for the transcript overlay's meter are throttled to
+# roughly this rate. Frames arrive every `frame_ms` (30ms => ~33/sec),
+# which is far more than a few-pixel-tall meter can show and more than the
+# overlay needs to repaint - so only emit every Nth frame. Still well above
+# the ~10/sec threshold where a meter stops looking continuous.
+_LEVEL_EVERY_N_FRAMES = 2
+
+# int16 full scale, for normalising a frame's RMS into the 0.0-1.0 the
+# overlay's meter expects.
+_INT16_FULL_SCALE = 32768.0
+
+# RMS of speech at a normal distance from a laptop mic sits well below full
+# scale (roughly 0.02-0.15 of it), so raw RMS would render as a permanently
+# flat meter. Scaling by this puts ordinary speech across most of the
+# meter's range; it is a display gain only and never touches the audio fed
+# to the VAD, wake word or STT.
+_LEVEL_GAIN = 8.0
+
+# How often the utterance-so-far is handed to the live partial transcriber.
+# Every ~10 frames (300ms at the default 30ms frame) - `StreamingTranscriber`
+# throttles further and drops anything it cannot keep up with, so this only
+# needs to be often enough not to be the bottleneck.
+_PARTIAL_EVERY_N_FRAMES = 10
 
 
 def _stream_sentences(deltas: Iterable[str]) -> Iterator[str]:
@@ -85,9 +135,23 @@ class Orchestrator:
         logger: logging.Logger | None = None,
         on_status: Callable[[str], None] | None = None,
         on_state: Callable[[str], None] | None = None,
+        transcript: TranscriptSink | None = None,
+        partial_transcriber: "PartialTranscriber | None" = None,
         clock: Callable[[], float] = time.monotonic,
         drain_context: Callable[[], ContextManager] | None = None,
     ) -> None:
+        """`transcript` is where the live conversation is published for the
+        on-screen overlay (`08-transcript-ui`) - see `_emit`. `None` (the
+        default) disables every transcript emission, so nothing about this
+        class's existing behaviour changes for a caller that doesn't want
+        the overlay, and the orchestrator's own tests keep passing unchanged.
+
+        `partial_transcriber` is `03-stt`'s `StreamingTranscriber`, which
+        turns speech-in-progress into the `user_partial` events the overlay
+        shows while the user is still talking. Also optional: without it the
+        user's words simply appear in one go when the main STT model
+        finishes, which is what happened before this existed.
+        """
         self._audio_source = audio_source
         self._audio_sink = audio_sink
         self._vad = vad
@@ -103,6 +167,8 @@ class Orchestrator:
         self._log = logger or logging.getLogger("orchestrator")
         self._on_status = on_status
         self._on_state = on_state
+        self._transcript = transcript
+        self._partials = partial_transcriber
         self._clock = clock
         self._drain_context = drain_context or self._default_drain_context
 
@@ -163,8 +229,65 @@ class Orchestrator:
         self._log.info(message)
         if self._on_status is not None:
             self._on_status(message)
-        if state is not None and self._on_state is not None:
-            self._on_state(state)
+        if state is not None:
+            if self._on_state is not None:
+                self._on_state(state)
+            # Same symbolic state, same vocabulary, one more consumer: the
+            # transcript overlay uses it to colour its status dot and to
+            # know when a conversation has ended (and so when to fade out).
+            self._emit(TranscriptEvent(kind=STATE, state=state))
+
+    def _emit(self, event: TranscriptEvent) -> None:
+        """Publish one transcript event, if anyone is listening.
+
+        Wrapped in `try/except` for the same reason `TrayApp.set_status`
+        wraps its tooltip update: this is called from the pipeline's hot
+        paths (per mic frame, per LLM token), and a transcript overlay that
+        is misbehaving, wedged or half-dead must never be able to interrupt
+        an actual conversation. `TranscriptSink`'s contract already says
+        implementations must not raise - this is the belt to that braces.
+        """
+        if self._transcript is None:
+            return
+        try:
+            self._transcript.emit(event)
+        except Exception:
+            self._log.debug("transcript sink raised, ignoring", exc_info=True)
+
+    def _frame_level(self, chunk: np.ndarray) -> float:
+        """RMS loudness of one mic frame as a 0.0-1.0 value for the
+        overlay's level meter. Purely cosmetic - see `_LEVEL_GAIN`."""
+        if len(chunk) == 0:
+            return 0.0
+        rms = float(np.sqrt(np.mean(np.square(chunk.astype(np.float64)))))
+        return min(1.0, rms / _INT16_FULL_SCALE * _LEVEL_GAIN)
+
+    def _observe_speech_frame(self, frames: list[np.ndarray], frame_index: int) -> None:
+        """Per-frame side effects while recording: feed the level meter and,
+        every so often, hand the utterance-so-far to the live partial
+        transcriber.
+
+        Shared by `_listen()` and `_await_followup()` so the two recording
+        paths cannot drift apart. Everything here is best-effort and cheap
+        by construction: `submit()` never blocks, and the level is one pass
+        over a 30ms frame.
+        """
+        if not frames:
+            return
+        if self._transcript is not None and frame_index % _LEVEL_EVERY_N_FRAMES == 0:
+            self._emit(TranscriptEvent(kind=LEVEL, level=self._frame_level(frames[-1])))
+        if self._partials is not None and frame_index % _PARTIAL_EVERY_N_FRAMES == 0:
+            self._partials.submit(np.concatenate(frames))
+
+    def _emit_user_text(self, text: str) -> None:
+        """The authoritative transcript of what the user said (or typed),
+        superseding any partial already on screen."""
+        if self._partials is not None:
+            # The utterance is over: drop any snapshot still queued or
+            # mid-inference so a late partial can't overwrite this final
+            # text, or leak into the next turn.
+            self._partials.reset()
+        self._emit(TranscriptEvent(kind=USER_FINAL, text=text))
 
     def stop(self) -> None:
         """Safe to call from another thread (e.g. a signal handler) - the
@@ -291,6 +414,7 @@ class Orchestrator:
             text = self._transcribe_and_log(audio)
         else:
             self._set_status(f"Got a typed question: {text!r}", state="processing")
+            self._emit_user_text(text)
 
         while True:
             if not text:
@@ -313,10 +437,15 @@ class Orchestrator:
 
             if followup_kind == "voice":
                 self._set_status("Transcribing your question", state="processing")
+                # No `_emit_user_text` here: `_transcribe_and_log` already
+                # publishes the transcript it produced. Calling it again for
+                # the voice path published the same `user_final` twice and
+                # drew the question as two identical rows in the overlay.
                 text = self._transcribe_and_log(payload)
             else:
                 text = payload
                 self._set_status(f"Got a typed question: {text!r}", state="processing")
+                self._emit_user_text(text)
 
     def _transcribe_and_log(self, audio: np.ndarray) -> str:
         start = time.monotonic()
@@ -326,6 +455,7 @@ class Orchestrator:
             "transcribed %.2fs of audio in %.2fs: %r",
             len(audio) / self._sample_rate, time.monotonic() - start, text,
         )
+        self._emit_user_text(text)
         return text
 
     def _idle(self) -> tuple[str, str | None]:
@@ -335,23 +465,30 @@ class Orchestrator:
             chunk = self._audio_source.read_chunk()
             if self._wake_word.process_chunk(chunk):
                 self._wake_word.reset()
+                self._emit(TranscriptEvent(kind=RESET))
                 return "voice", None
             try:
                 text = self._text_queue.get_nowait()
             except queue.Empty:
                 continue
+            self._emit(TranscriptEvent(kind=RESET))
             return "text", text
         return "stopped", None
 
     def _listen(self) -> np.ndarray:
+        if self._partials is not None:
+            self._partials.reset()
         frames: list[np.ndarray] = []
         total_samples = 0
         heard_speech = False
+        frame_index = 0
 
         while True:
             chunk = self._audio_source.read_chunk()
             frames.append(chunk)
             total_samples += len(chunk)
+            self._observe_speech_frame(frames, frame_index)
+            frame_index += 1
 
             if self._vad.is_speech(chunk):
                 heard_speech = True
@@ -383,6 +520,7 @@ class Orchestrator:
         frames: list[np.ndarray] = []
         total_samples = 0
         heard_speech = False
+        frame_index = 0
         deadline = self._clock() + self._followup_seconds
 
         while True:
@@ -392,6 +530,8 @@ class Orchestrator:
             if heard_speech or speaking:
                 frames.append(chunk)
                 total_samples += len(chunk)
+                self._observe_speech_frame(frames, frame_index)
+                frame_index += 1
                 if speaking:
                     heard_speech = True
                 elif heard_speech:
@@ -477,7 +617,14 @@ class Orchestrator:
                     deltas.close()
         finally:
             self._responding = False
-            self._record_reply(prompt, " ".join(reply_parts).strip())
+            reply = " ".join(reply_parts).strip()
+            self._record_reply(prompt, reply)
+            # In the `finally` alongside `_record_reply` deliberately: a
+            # reply cut short by `stop_generating()`, or abandoned on an
+            # exception, still has to close its turn, or the overlay would
+            # be left showing a streaming caret forever and would never
+            # fade out.
+            self._emit(TranscriptEvent(kind=ASSISTANT_FINAL, text=reply))
 
     def _log_deltas(self, deltas: Iterator[str]) -> Iterator[str]:
         """Debug-level visibility into the raw token-level stream from
@@ -493,6 +640,12 @@ class Orchestrator:
         the orchestrator logger to DEBUG to see this."""
         for delta in deltas:
             self._log.debug("LLM token delta: %r", delta)
+            # Published at *token* granularity, unlike `_speak()`, which
+            # needs whole sentences for Piper to sound natural. Text on
+            # screen has no such constraint, so the overlay gets the real
+            # stream and can show the reply arriving as it is generated,
+            # ahead of the sentence currently being spoken.
+            self._emit(TranscriptEvent(kind=ASSISTANT_DELTA, text=delta))
             yield delta
 
     def _speak(self, text: str) -> None:

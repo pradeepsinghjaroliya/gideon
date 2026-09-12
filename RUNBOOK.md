@@ -86,3 +86,52 @@ cp modules/07-orchestrator/systemd/gideon.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user restart gideon.service
 ```
+
+## Transcript overlay
+
+The bottom-of-screen conversation transcript (`08-transcript-ui`) is a
+separate process. With `transcript_ui.autostart: true` (the default) the
+orchestrator starts and stops it for you, so there is nothing extra to run.
+
+To run it by hand — useful when developing, or if you set
+`autostart: false`:
+
+```
+. .venv/bin/activate
+python -m transcript_ui
+```
+
+To see it working with no mic, model or LLM involved:
+
+```
+python -m transcript_ui --demo
+```
+
+To exercise the X11 fallback path on a Wayland machine:
+
+```
+GDK_BACKEND=x11 python -m transcript_ui --demo
+```
+
+### If the overlay does not appear
+
+1. **Check which backend it chose** — it logs one line at startup:
+   `transcript overlay using the <layer-shell|x11|wayland-plain> backend`.
+2. **`wayland-plain`** means the compositor supports neither
+   `wlr-layer-shell` nor client window positioning (GNOME, KDE), and no
+   XWayland was available to fall back to. Install `gtk-layer-shell` if you
+   are on Hyprland/Sway (see `modules/08-transcript-ui/requirements.txt`),
+   or make sure XWayland is running.
+3. **Nothing on screen at all, no errors** — the overlay only shows itself
+   while a conversation is happening. Say the wake word, or run with
+   `--demo` to confirm it can draw.
+4. **`a transcript overlay is already running on ...`** — exactly what it
+   says; one instance owns the socket. Kill the old one
+   (`pkill -f 'm transcript_ui'`) or leave it be.
+5. **Stale socket after a hard kill** — handled automatically: the next
+   start detects that nothing is listening behind the file and reclaims it.
+
+The overlay is click-through by design: clicks, scrolling and hovering all
+pass through to whatever is underneath, and it never takes keyboard focus.
+That is intentional, not a bug — it cannot steal a keystroke from whatever
+you are actually working in.

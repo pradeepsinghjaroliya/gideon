@@ -13,6 +13,7 @@ in any order in between.
 - [x] `05-tts` — Piper wrapper (`en_US-lessac-high` confirmed by listening test)
 - [x] `06-text-input` — popup/tray fallback text input (tray click -> popup -> submit confirmed on real hardware)
 - [x] `07-orchestrator` — state machine, systemd service, ties all modules together (core wake-word -> reply loop, follow-up window, and the systemd install/kill-recovery test plan items all confirmed; see notes below)
+- [x] `08-transcript-ui` — on-screen live conversation transcript, pinned to the bottom of the screen (layer-shell and X11 backends both confirmed on real hardware 2026-09-12; see notes below)
 
 ## Open decisions log
 
@@ -678,3 +679,94 @@ its `plan.md`, so later modules (and the orchestrator) aren't surprised.
   146/146 tests passing repo-wide. **Not yet confirmed on real
   hardware** - needs the user to retest "Stop speaking"/"Stop generating"
   and confirm the ALSA errors and stall are gone.
+
+## 08-transcript-ui: live on-screen conversation transcript (2026-09-12,
+requested by the user)
+
+The user asked for "a minimal looking UI that shows the conversation
+transcript in real time" at the bottom of the screen: while talking to
+Gideon there was nothing on screen showing the words, only the terminal log
+and the tray Dashboard's *status* lines. Then, as a follow-up, that it must
+"work on all types of Linux system ... hyprland, wayland, x11, all sort and
+should be generic" rather than being built around this machine's Hyprland
+setup.
+
+Four things were settled with the user before building:
+
+- **Live partials**, not just the final transcript: their words appear as
+  they speak. Gideon's replies already stream token-by-token.
+- **Auto show / auto hide**: hidden while idle, fades in on the wake word,
+  fades out a few seconds after returning to IDLE.
+- **Display only**: click-through, never takes keyboard focus. The tray
+  Dashboard stays the place to type/stop/mute.
+- **Portable** across wlroots, GNOME/KDE Wayland, and X11.
+
+### What was built
+
+- New `modules/08-transcript-ui/` — the overlay, as its **own process**
+  fed newline-delimited JSON over a unix socket. It cannot be a thread in
+  the orchestrator: `TrayApp.run()` already owns the main thread with
+  Tkinter, pystray's AppIndicator backend already runs a `Gtk.main()` on a
+  background thread, and GTK is not thread-safe. A separate process also
+  means a UI crash costs the transcript and nothing else.
+- New `shared/transcript.py` — the `TranscriptEvent`/`TranscriptSink`
+  contract, so neither side imports the other (see `ARCHITECTURE.md`).
+- New `stt/streaming.py` — `StreamingTranscriber`, a **second, tiny**
+  whisper model re-transcribing the growing audio buffer on a worker
+  thread with a single-slot latest-wins mailbox. The main `small` model
+  still produces the final transcript, so accuracy is unchanged and only
+  the preview is cheap. `submit()` is contractually non-blocking because
+  it is called from the mic loop.
+- `07-orchestrator` gained optional `transcript` and `partial_transcriber`
+  parameters. Both default to `None`, so nothing changes for a caller that
+  does not want the overlay — which is what kept all 53 pre-existing
+  orchestrator tests valid unmodified.
+- New `transcript_ui` config section, plus `stt.partials` /
+  `stt.partial_model_size`.
+
+### Portability approach
+
+One GTK3 renderer, three window-surfacing strategies, auto-detected:
+`gtk-layer-shell` on wlroots (Hyprland/Sway/river/wayfire); an undecorated
+keep-above `UTILITY` window repositioned to bottom-centre on X11 and
+XWayland; and for GNOME Mutter / KDE KWin on Wayland — which support
+neither layer-shell nor client window positioning — a one-shot `execve`
+re-launch under `GDK_BACKEND=x11` onto the X11 path. The backend *decision*
+is a pure function of two facts, so the whole table is unit-tested without
+needing a second distro.
+
+### Bugs found by running it, not by review
+
+Each was found by inspecting the live surface with `hyprctl layers` /
+`hyprctl clients` and screenshots; all are now covered by regression tests.
+See `modules/08-transcript-ui/plan.md` for the full list with causes. In
+short: layer-shell ignores `set_default_size` (card rendered 205px wide);
+a resizable window keeps its first allocation, so every transcript row was
+squashed to 1x1 and nothing but the status line was visible; a GTK size
+request is a minimum, so long lines pushed the card to 1211px; the overlay
+opened on the wrong monitor without an explicit `set_monitor`;
+`AlreadyRunningError` escaped as a traceback because the socket was claimed
+after the window was built; the X11 WM_CLASS came out as `__main__.py`; and
+the stale-transcript check read `visible` after it had already been set.
+
+304/304 tests passing repo-wide (was 232).
+
+**Bug found by the user on real hardware 2026-09-12**: a spoken follow-up
+showed its question twice in the overlay (screenshot). `step()`'s follow-up
+branch emitted `user_final` outside its `if/else`, so the voice path
+published it twice — once from `_transcribe_and_log()` and once from a
+stray call. Typed follow-ups and first turns were unaffected, which is why
+it took a real conversation to surface. Fixed, plus an overlay-side guard
+so anything arriving after a user turn is final can never open a second
+row. Four new orchestrator tests count `user_final` events across a whole
+multi-turn conversation — the slice the old tests missed. See
+`modules/08-transcript-ui/plan.md` item 8.
+
+**Confirmed on real hardware 2026-09-12** — both the layer-shell and X11
+backends verified by live surface geometry (correct monitor, centred, 722px
+wide, height tracking the conversation, 48px bottom margin) and by
+screenshot (listening state with animated level meter and a self-correcting
+live partial; speaking state with the reply streaming). **Not yet
+confirmed**: the GNOME/KDE re-exec *trigger* (this machine has layer-shell,
+so it never fires — the X11 path it targets is verified), and the
+no-compositor `no-alpha` styling.
