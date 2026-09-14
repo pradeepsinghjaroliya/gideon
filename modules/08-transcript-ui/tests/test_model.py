@@ -1,6 +1,7 @@
 from shared.transcript import (
     ASSISTANT_DELTA,
     ASSISTANT_FINAL,
+    HIDE,
     LEVEL,
     RESET,
     STATE,
@@ -121,6 +122,32 @@ def test_reset_clears_the_transcript():
 
     assert _send(model, kind=RESET) is True
     assert model.turns == []
+
+
+def test_hide_dismisses_immediately_without_waiting_for_the_idle_timer():
+    """The tray's "Hide transcript now" - unlike the normal auto-hide, this
+    must not wait on `hide_after_seconds`, or even on the pipeline having
+    gone idle at all."""
+    model, clock = _make(hide_after_seconds=4.0)
+    _send(model, kind=STATE, state=STATE_LISTENING)
+    _send(model, kind=USER_FINAL, text="hi")
+    assert model.visible is True
+
+    assert _send(model, kind=HIDE) is True
+    assert model.visible is False
+    assert model.turns == []
+
+    # Confirming it stays hidden - not just toggled - even once whatever
+    # time would have elapsed for the normal timer passes.
+    clock.advance(10.0)
+    assert model.tick() is False
+    assert model.visible is False
+
+
+def test_hide_with_nothing_showing_reports_no_change():
+    model, _ = _make()
+
+    assert _send(model, kind=HIDE) is False
 
 
 # --- typewriter ------------------------------------------------------------

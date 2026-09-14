@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from shared.transcript import TranscriptEvent
+from shared.transcript import HIDE, TranscriptEvent
 
 from transcript_ui.protocol import default_socket_path, encode
 
@@ -82,6 +82,36 @@ class TranscriptClient:
         branches on this, it just emits and lets events fall on the floor if
         nobody is listening."""
         return self._connected
+
+    def is_enabled(self) -> bool:
+        """For the tray's "Transcript: On/Off" toggle to read current
+        state (`set_enabled`'s counterpart)."""
+        return self._enabled
+
+    def set_enabled(self, value: bool) -> None:
+        """Runtime on/off toggle for the tray's "Transcript" control -
+        unlike the constructor's `enabled` (a static "don't even wire this
+        up" switch checked once at startup), this can flip at any time.
+        Turning off hides whatever is on screen right now (rather than
+        leaving it to the overlay's own auto-hide timer) before it stops
+        forwarding events; turning on resumes forwarding and starts the
+        sender thread if `start()` was never called or `enabled=False` at
+        construction skipped it. Never raises - same contract as `emit()`,
+        since this runs from a tray click, not the pipeline itself, but
+        nothing here should be allowed to break the tray either."""
+        if value == self._enabled:
+            return
+        if not value:
+            self.hide_now()
+        self._enabled = value
+        if value:
+            self.start()
+
+    def hide_now(self) -> None:
+        """Dismiss the overlay immediately - the tray's "Hide transcript
+        now" action, for early dismissal instead of waiting out
+        `hide_after_seconds`. A no-op while disabled, same as `emit()`."""
+        self.emit(TranscriptEvent(kind=HIDE))
 
     def start(self) -> None:
         if not self._enabled:
@@ -218,3 +248,12 @@ class NullTranscriptClient:
 
     def is_connected(self) -> bool:
         return False
+
+    def is_enabled(self) -> bool:
+        return False
+
+    def set_enabled(self, value: bool) -> None:
+        return None
+
+    def hide_now(self) -> None:
+        return None

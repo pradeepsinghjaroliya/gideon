@@ -19,8 +19,8 @@ import queue
 import signal
 import threading
 
-from shared.config import TranscriptUiConfig
-from shared.config import load_config
+from shared.config import ConfigError, TranscriptUiConfig
+from shared.config import load_config, set_transcript_ui_enabled
 from shared.logging_setup import setup_logging
 from shared.transcript import USER_PARTIAL, TranscriptEvent
 
@@ -45,6 +45,8 @@ def _build_dashboard_controls(
     llm_control: OllamaControl,
     orchestrator_ref: list[Orchestrator],
     tray_app_ref: list[TrayApp],
+    transcript: TranscriptClient | NullTranscriptClient,
+    log,
 ) -> list[DashboardControl]:
     """Tray "Dashboard..." panel controls - see `text_input/dashboard.py`.
 
@@ -54,7 +56,9 @@ def _build_dashboard_controls(
     `Orchestrator` takes `tray_app.set_status`, `TrayApp` takes these
     controls) - the callbacks below only run once the panel is actually
     clicked, long after `main()` has filled both refs in, so the
-    indirection just bridges that construction-order gap.
+    indirection just bridges that construction-order gap. `transcript` (the
+    already-constructed `TranscriptClient`/`NullTranscriptClient` - see
+    `_build_transcript_stack`) has no such gap, so it is just used directly.
     """
 
     def orchestrator() -> Orchestrator:
@@ -85,6 +89,22 @@ def _build_dashboard_controls(
     def online_label() -> str:
         return "Online" if orchestrator().is_online() else "Offline"
 
+    def toggle_transcript() -> None:
+        new_value = not transcript.is_enabled()
+        transcript.set_enabled(new_value)
+        try:
+            set_transcript_ui_enabled(new_value)
+        except (ConfigError, OSError):
+            # The live toggle above already applied regardless - only
+            # persisting it to config.yaml (so it survives a restart)
+            # failed, which must not take down the tray click that
+            # triggered it.
+            log.warning("could not persist transcript_ui.enabled to config.yaml", exc_info=True)
+
+    def transcript_label() -> str:
+        dot = "\U0001f7e2" if transcript.is_enabled() else "\U0001f534"
+        return f"Transcript: {dot} {'On' if transcript.is_enabled() else 'Off'}"
+
     return [
         DashboardControl(get_label=llm_label, on_click=toggle_llm, is_active=llm_control.is_running),
         DashboardControl(
@@ -92,10 +112,16 @@ def _build_dashboard_controls(
             on_click=lambda: orchestrator().set_mic_muted(not orchestrator().is_mic_muted()),
             is_active=lambda: not orchestrator().is_mic_muted(),
         ),
+        DashboardControl(get_label=transcript_label, on_click=toggle_transcript, is_active=transcript.is_enabled),
         DashboardControl(
             get_label=online_label,
             on_click=lambda: orchestrator().set_online(not orchestrator().is_online()),
             is_active=lambda: orchestrator().is_online(),
+        ),
+        DashboardControl(
+            get_label=lambda: "Hide transcript now",
+            on_click=transcript.hide_now,
+            is_enabled=transcript.is_enabled,
         ),
         DashboardControl(
             get_label=lambda: "Stop generating",
@@ -188,13 +214,14 @@ def main() -> None:
     llm_control = OllamaControl(base_url=config.llm.base_url)
     orchestrator_ref: list[Orchestrator] = []
     tray_app_ref: list[TrayApp] = []
-    dashboard_controls = _build_dashboard_controls(llm_control, orchestrator_ref, tray_app_ref)
+    dashboard_controls = _build_dashboard_controls(llm_control, orchestrator_ref, tray_app_ref, transcript, log)
     tray_app = TrayApp(
         on_text=text_queue.put,
-        # LLM/mic (the two most-checked-at-a-glance controls) also surface
-        # directly in the native tray menu - see tray.py's docstring -
-        # "Online" and "Stop speaking" stay dashboard-only.
-        quick_menu_controls=dashboard_controls[:2],
+        # LLM/mic/transcript (the most-checked-or-flipped-at-a-glance
+        # controls) also surface directly in the native tray menu - see
+        # tray.py's docstring - "Online", "Hide transcript now" and "Stop
+        # speaking" stay dashboard-only.
+        quick_menu_controls=dashboard_controls[:3],
         dashboard_controls=dashboard_controls,
         volume_control=_build_volume_control(orchestrator_ref),
         # orchestrator_ref[0] isn't filled in until below - same

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from shared.config import ConfigError, load_config
+from shared.config import ConfigError, load_config, set_transcript_ui_enabled
 
 REPO_ROOT_CONFIG = Path(__file__).resolve().parents[3] / "config" / "config.yaml"
 
@@ -52,3 +52,77 @@ def test_unknown_field_in_section_raises_clear_error(tmp_path):
 
     with pytest.raises(ConfigError, match="invalid field"):
         load_config(bad)
+
+
+def test_set_transcript_ui_enabled_flips_the_value_in_place(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "transcript_ui:\n"
+        "  enabled: true\n"
+        "  autostart: true          # orchestrator starts/stops the overlay process\n"
+        "  hide_after_seconds: 4.0\n"
+        "\n"
+        "orchestrator:\n"
+        "  history_turns: 6\n"
+    )
+
+    set_transcript_ui_enabled(False, path=config)
+
+    assert load_config(config).transcript_ui.enabled is False
+
+
+def test_set_transcript_ui_enabled_preserves_every_other_line_verbatim(tmp_path):
+    """The whole point of a targeted text edit rather than a YAML
+    re-dump: comments and formatting elsewhere in the file must survive
+    byte-for-byte."""
+    config = tmp_path / "config.yaml"
+    original = (
+        "transcript_ui:\n"
+        "  enabled: true\n"
+        "  autostart: true          # orchestrator starts/stops the overlay process\n"
+        "  hide_after_seconds: 4.0\n"
+        "\n"
+        "orchestrator:\n"
+        "  history_turns: 6   # comment on an unrelated section\n"
+    )
+    config.write_text(original)
+
+    set_transcript_ui_enabled(False, path=config)
+
+    updated = config.read_text()
+    assert updated == original.replace("enabled: true", "enabled: false", 1)
+
+
+def test_set_transcript_ui_enabled_round_trips_true_and_false(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text("transcript_ui:\n  enabled: false\n")
+
+    set_transcript_ui_enabled(True, path=config)
+    assert load_config(config).transcript_ui.enabled is True
+
+    set_transcript_ui_enabled(False, path=config)
+    assert load_config(config).transcript_ui.enabled is False
+
+
+def test_set_transcript_ui_enabled_on_the_real_repo_config_round_trips(tmp_path):
+    """Guards against the seeded config.yaml drifting into a shape (e.g. a
+    reordered/renamed `enabled` line) that this targeted edit can no
+    longer find."""
+    original = REPO_ROOT_CONFIG.read_text()
+    scratch = tmp_path / "config.yaml"
+    scratch.write_text(original)
+    was_enabled = load_config(scratch).transcript_ui.enabled
+
+    set_transcript_ui_enabled(not was_enabled, path=scratch)
+    assert load_config(scratch).transcript_ui.enabled is not was_enabled
+
+    set_transcript_ui_enabled(was_enabled, path=scratch)
+    assert scratch.read_text() == original
+
+
+def test_set_transcript_ui_enabled_missing_section_raises_clear_error(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text("orchestrator:\n  history_turns: 6\n")
+
+    with pytest.raises(ConfigError, match="transcript_ui"):
+        set_transcript_ui_enabled(True, path=config)

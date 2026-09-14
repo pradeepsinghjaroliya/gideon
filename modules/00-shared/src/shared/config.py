@@ -9,6 +9,7 @@ Each module should import only the dataclass for its own section, e.g.:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -154,3 +155,39 @@ def load_config(path: Path | str | None = None) -> Config:
             raise ConfigError(f"invalid field in config section '{key}': {exc}") from exc
 
     return Config(**sections)
+
+
+def set_transcript_ui_enabled(value: bool, path: Path | str | None = None) -> None:
+    """Persists the tray's "Transcript" toggle so it survives a restart.
+
+    Patches only the `transcript_ui.enabled` line in place, via a plain
+    text edit rather than a `yaml.safe_load`/`safe_dump` round-trip -
+    re-serializing the whole file through PyYAML would silently drop every
+    inline `# ...` comment in config.yaml (see `autostart`,
+    `hide_after_seconds`, etc.), which is not an acceptable side effect of
+    flipping one boolean from a tray click.
+    """
+    config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
+    lines = config_path.read_text().splitlines(keepends=True)
+
+    section_start = next(
+        (i for i, line in enumerate(lines) if line.startswith("transcript_ui:")), None
+    )
+    if section_start is None:
+        raise ConfigError(f"no 'transcript_ui' section found in {config_path}")
+
+    for i in range(section_start + 1, len(lines)):
+        line = lines[i]
+        if line.strip() and not line[0].isspace():
+            break  # ran into the next top-level section without finding it
+        # Strip the line ending before matching: `\s*` would otherwise
+        # happily swallow it too (`\s` includes `\n`), and re-adding a
+        # newline unconditionally below would then double it up.
+        body, ending = (line[:-1], "\n") if line.endswith("\n") else (line, "")
+        match = re.match(r"^(\s*enabled:\s*)(true|false)(\s*(?:#.*)?)$", body)
+        if match:
+            lines[i] = f"{match.group(1)}{'true' if value else 'false'}{match.group(3)}{ending}"
+            config_path.write_text("".join(lines))
+            return
+
+    raise ConfigError(f"no 'transcript_ui.enabled' line found in {config_path}")

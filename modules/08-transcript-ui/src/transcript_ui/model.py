@@ -27,6 +27,7 @@ from typing import Callable
 from shared.transcript import (
     ASSISTANT_DELTA,
     ASSISTANT_FINAL,
+    HIDE,
     LEVEL,
     RESET,
     STATE,
@@ -118,7 +119,21 @@ class TranscriptModel:
             self.turns.clear()
             self.level = 0.0
             return True
+        if event.kind == HIDE:
+            return self._handle_hide()
         return False
+
+    def _handle_hide(self) -> bool:
+        """Dismiss immediately - the tray's "Hide transcript now", rather
+        than waiting out the normal idle + `hide_after_seconds` countdown.
+        Clears the transcript too, same as a genuinely new conversation, so
+        a stale reply is not still sitting there next time it reappears."""
+        changed = self.visible or bool(self.turns)
+        self.visible = False
+        self.level = 0.0
+        self.turns.clear()
+        self._idle_since = None
+        return changed
 
     def _handle_state(self, state: str) -> bool:
         if not state:

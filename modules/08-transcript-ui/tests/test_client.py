@@ -6,6 +6,7 @@ import pytest
 
 from shared.transcript import (
     ASSISTANT_DELTA,
+    HIDE,
     STATE,
     USER_FINAL,
     TranscriptEvent,
@@ -220,3 +221,74 @@ def test_null_client_accepts_the_full_lifecycle():
     client.emit(TranscriptEvent(kind=USER_FINAL, text="x"))
     assert client.is_connected() is False
     client.close()
+    assert client.is_enabled() is False
+    client.set_enabled(True)
+    client.hide_now()
+
+
+def test_hide_now_sends_a_hide_event(tmp_path):
+    path = tmp_path / "t.sock"
+    listener = Listener(path)
+    client = TranscriptClient(socket_path=path)
+    client.start()
+    try:
+        client.hide_now()
+        assert _wait_for(lambda: len(listener.events) == 1), listener.events
+        assert listener.events[0].kind == HIDE
+    finally:
+        client.close()
+        listener.close()
+
+
+def test_set_enabled_false_hides_first_then_stops_forwarding(tmp_path):
+    """Toggling off from the tray must still get the "hide now" event out
+    before it starts discarding everything - reversing that order would
+    leave a stale transcript on screen with no way to clear it."""
+    path = tmp_path / "t.sock"
+    listener = Listener(path)
+    client = TranscriptClient(socket_path=path)
+    client.start()
+    try:
+        client.emit(TranscriptEvent(kind=USER_FINAL, text="hi"))
+        assert _wait_for(lambda: len(listener.events) == 1)
+
+        client.set_enabled(False)
+        assert _wait_for(lambda: len(listener.events) == 2), listener.events
+        assert listener.events[1].kind == HIDE
+
+        client.emit(TranscriptEvent(kind=USER_FINAL, text="should be dropped"))
+        time.sleep(0.1)
+        assert len(listener.events) == 2
+    finally:
+        client.close()
+        listener.close()
+
+
+def test_set_enabled_true_resumes_forwarding_and_starts_the_thread_if_needed(tmp_path):
+    path = tmp_path / "t.sock"
+    listener = Listener(path)
+    client = TranscriptClient(socket_path=path, enabled=False)
+    client.start()  # no-op: disabled at construction
+    try:
+        client.set_enabled(True)
+        client.emit(TranscriptEvent(kind=USER_FINAL, text="now visible"))
+        assert _wait_for(lambda: len(listener.events) == 1), listener.events
+        assert listener.events[0].text == "now visible"
+    finally:
+        client.close()
+        listener.close()
+
+
+def test_set_enabled_to_the_same_value_is_a_no_op(tmp_path):
+    path = tmp_path / "t.sock"
+    listener = Listener(path)
+    client = TranscriptClient(socket_path=path)
+    client.start()
+    try:
+        client.set_enabled(True)  # already enabled - must not emit a HIDE
+        time.sleep(0.1)
+        assert listener.events == []
+        assert client.is_enabled() is True
+    finally:
+        client.close()
+        listener.close()

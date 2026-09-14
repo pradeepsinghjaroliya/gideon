@@ -41,7 +41,7 @@ text_input:
 # Appears when the wake word fires, streams both sides of the conversation
 # live, and fades out once Gideon has been idle for `hide_after_seconds`.
 transcript_ui:
-  enabled: true
+  enabled: false
   autostart: true          # orchestrator starts/stops the overlay process
   socket_path: null        # null = $XDG_RUNTIME_DIR/gideon-transcript.sock
   width: 720               # px, capped at 55% of the monitor width

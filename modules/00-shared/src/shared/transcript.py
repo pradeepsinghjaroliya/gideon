@@ -51,8 +51,13 @@ LEVEL = "level"
 # Clears the transcript - a brand new conversation rather than a follow-up.
 RESET = "reset"
 
+# Hide the overlay immediately, bypassing its own auto-hide timer - the
+# tray's "Hide transcript now" action, for dismissing early rather than
+# waiting out `hide_after_seconds`.
+HIDE = "hide"
+
 KINDS = frozenset(
-    {STATE, USER_PARTIAL, USER_FINAL, ASSISTANT_DELTA, ASSISTANT_FINAL, LEVEL, RESET}
+    {STATE, USER_PARTIAL, USER_FINAL, ASSISTANT_DELTA, ASSISTANT_FINAL, LEVEL, RESET, HIDE}
 )
 
 # Symbolic assistant states, matching `on_state`'s existing vocabulary.
