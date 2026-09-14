@@ -1,9 +1,16 @@
 """Entry point: loads config, constructs every module's real implementation,
 and runs the state machine loop forever. Run: `python -m orchestrator.main`.
 
-Shutdown: SIGINT/SIGTERM set a flag the state machine notices within one mic
-frame (see `state_machine.Orchestrator.stop`), then the mic stream and tray
-icon are torn down cleanly before exiting.
+Threading: `Orchestrator.run_forever()` runs in a background thread, while
+the main thread runs `TrayApp.run()` - `text_input.tray`'s Tkinter dashboard
+must be driven from the main thread, per its own docstring.
+
+Shutdown: clicking the tray's "Quit" runs `TrayApp`'s `on_quit`, which stops
+the orchestrator; SIGINT/SIGTERM do the same and also call `tray_app.quit()`
+to unblock `TrayApp.run()`'s request loop. Either way, `run_forever()` stops
+within one mic frame (see `state_machine.Orchestrator.stop`), `TrayApp.run()`
+returns, and the mic/orchestrator thread/tray icon are torn down before
+exiting.
 """
 
 from __future__ import annotations
@@ -190,9 +197,13 @@ def main() -> None:
         quick_menu_controls=dashboard_controls[:2],
         dashboard_controls=dashboard_controls,
         volume_control=_build_volume_control(orchestrator_ref),
+        # orchestrator_ref[0] isn't filled in until below - same
+        # construction-order gap _build_dashboard_controls's docstring
+        # explains - but on_quit only ever runs once "Quit" is actually
+        # clicked, long after that.
+        on_quit=lambda: orchestrator_ref[0].stop(),
     )
     tray_app_ref.append(tray_app)
-    tray_thread = threading.Thread(target=tray_app.run, daemon=True)
 
     orchestrator = Orchestrator(
         audio_source=audio_source,
@@ -217,13 +228,15 @@ def main() -> None:
     def handle_shutdown_signal(signum, frame) -> None:
         log.info("received signal %s, shutting down", signum)
         orchestrator.stop()
+        tray_app.quit()
 
     signal.signal(signal.SIGINT, handle_shutdown_signal)
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
 
     log.info("starting mic and tray icon")
     audio_source.start()
-    tray_thread.start()
+    orchestrator_thread = threading.Thread(target=orchestrator.run_forever, daemon=True)
+    orchestrator_thread.start()
 
     # Overlay first, then the client: the client's sender thread retries
     # with a backoff anyway, so the order is not load-bearing, but starting
@@ -237,9 +250,14 @@ def main() -> None:
 
     log.info("ready - say the wake word or use the tray icon's 'Ask...'")
     try:
-        orchestrator.run_forever()
+        # Blocks the main thread (as text_input.tray.TrayApp.run requires)
+        # until "Quit" is clicked or handle_shutdown_signal calls
+        # tray_app.quit().
+        tray_app.run()
     finally:
         log.info("stopping mic")
+        orchestrator.stop()
+        orchestrator_thread.join(timeout=5)
         audio_source.stop()
         if partials is not None:
             partials.stop()

@@ -28,6 +28,34 @@ def test_quit_stops_icon():
     assert icon.stopped
 
 
+def test_quit_runs_on_quit_callback_after_icon_stopped():
+    """Regression test: clicking "Quit" must actually stop the assistant
+    (via `on_quit`, which `main.py` wires to `Orchestrator.stop`), not just
+    this tray icon - see docs/RUNBOOK.md and the bug where "Quit" silently
+    left the whole process running."""
+    icon = FakeIcon()
+    quit_calls = []
+    app = TrayApp(on_text=lambda text: None, icon=icon, on_quit=lambda: quit_calls.append(icon.stopped))
+
+    app._request_quit(icon, None)
+    app.run()
+
+    assert quit_calls == [True]
+
+
+def test_quit_method_is_equivalent_to_request_quit():
+    """`quit()` is the thread-safe entry point external callers (e.g. a
+    signal handler) use to unblock `run()` - same effect as clicking the
+    tray's own "Quit" item."""
+    icon = FakeIcon()
+    app = TrayApp(on_text=lambda text: None, icon=icon)
+
+    app.quit()
+    app.run()
+
+    assert icon.stopped
+
+
 def test_set_status_appends_to_log_and_updates_icon_title():
     icon = FakeIcon()
     app = TrayApp(on_text=lambda text: None, icon=icon)

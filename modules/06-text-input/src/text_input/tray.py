@@ -90,6 +90,7 @@ class TrayApp:
         dashboard_controls: list[DashboardControl] | None = None,
         quick_menu_controls: list[DashboardControl] | None = None,
         volume_control: DashboardSlider | None = None,
+        on_quit: Callable[[], None] | None = None,
     ) -> None:
         """`quick_menu_controls` are rendered as native menu entries above
         "Dashboard..." (e.g. "LLM: Running", "Mic: On") - clicking one
@@ -103,10 +104,14 @@ class TrayApp:
         here rather than importing orchestrator specifics, so this module
         stays independently buildable/testable - `main.py` builds the
         `pystray.MenuItem`s/`DashboardControl`s/`DashboardSlider` and
-        passes them in."""
+        passes them in. `on_quit`, if given, runs once `run()`'s loop has
+        actually exited (icon stopped) - `main.py` uses it to stop the
+        orchestrator, so clicking "Quit" here stops the whole assistant,
+        not just this tray icon."""
         self._on_text = on_text
         self._dashboard_controls = dashboard_controls
         self._volume_control = volume_control
+        self._on_quit = on_quit
         self._requests: queue.Queue[object] = queue.Queue()
         self._log: deque[str] = deque(maxlen=_LOG_SIZE)
 
@@ -159,11 +164,21 @@ class TrayApp:
         self._requests.put_nowait(_DASHBOARD)
 
     def _request_quit(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
+        self.quit()
+
+    def quit(self) -> None:
+        """Thread-safe: requests `run()`'s loop to exit. Called from the
+        tray's own "Quit" menu item (via `_request_quit`, on pystray's
+        callback thread) or externally, e.g. a signal handler on shutdown -
+        either way this only enqueues the request, so it never touches Tk
+        itself and is safe to call from any thread."""
         self._requests.put_nowait(_QUIT)
 
     def run(self) -> None:
-        """Blocks the calling thread. Must be called from the main thread,
-        since the popups it opens use Tkinter."""
+        """Blocks the calling thread until `quit()` is called. Must be
+        called from the main thread, since the popups it opens use
+        Tkinter. Runs `on_quit` (if given) once the loop has actually
+        exited and the icon is stopped."""
         thread = threading.Thread(target=self._icon.run, daemon=True)
         thread.start()
         try:
@@ -175,6 +190,8 @@ class TrayApp:
                     self._show_dashboard_window()
         finally:
             self._icon.stop()
+        if self._on_quit is not None:
+            self._on_quit()
 
     def _show_dashboard_window(self) -> None:
         root = tk.Tk()
