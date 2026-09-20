@@ -14,6 +14,7 @@ in any order in between.
 - [x] `06-text-input` — popup/tray fallback text input (tray click -> popup -> submit confirmed on real hardware)
 - [x] `07-orchestrator` — state machine, systemd service, ties all modules together (core wake-word -> reply loop, follow-up window, and the systemd install/kill-recovery test plan items all confirmed; see notes below)
 - [x] `08-transcript-ui` — on-screen live conversation transcript, pinned to the bottom of the screen (layer-shell and X11 backends both confirmed on real hardware 2026-09-12; see notes below)
+- [x] `09-agentic` — pydantic-ai `Agent` + LLM provider registry/tools, replacing `04-llm-client`'s direct-HTTP Ollama call (tool use confirmed end-to-end 2026-09-14; see notes below)
 
 ## Open decisions log
 
@@ -795,3 +796,329 @@ Two housekeeping changes, neither touching any module's code:
 **Confirmed on real hardware 2026-09-13**: `scripts/dev.sh` run end to end —
 preflight passed, overlay came up on the layer-shell backend, reached
 `ready`, and a full wake→STT→LLM→TTS turn completed before `Ctrl+C`.
+
+## 09-agentic: agentic, multi-provider LLM layer (2026-09-14, requested by the user)
+
+The user's ask: move off a single-shot chat completion to an agentic
+architecture (the LLM can call tools in a loop), with LLM providers as
+swappable/addable files (Ollama first), and tray controls that adapt to
+the selected provider - keep the existing start/stop control for a local
+provider, add a "pause" guard for a remote one so a background
+conversation can't accidentally spend real API credits.
+
+An initial direction using the Cline SDK was explored and ruled out: it's
+Node/TS-only with no Python bindings, and this is a pure-Python project -
+bridging it in would have meant running a second language runtime as a
+subprocess for one piece. Landed on **pydantic-ai** instead (see
+`modules/09-agentic/plan.md` for the comparison against openai-agents and
+smolagents) - stays pure Python, no new runtime.
+
+### What was built
+
+- New `modules/09-agentic/` — `agentic.providers.registry` (`config.llm.backend`
+  -> `ProviderDefinition`; `ollama.py` is the one provider so far, reached
+  via Ollama's `/v1` OpenAI-compatible endpoint) and `agentic.tools.registry`
+  (one concrete example tool, `get_current_datetime`, proving the tool-call
+  loop end-to-end - real device-control tools get added the same way later).
+- `04-llm-client`'s `OllamaClient` (direct HTTP to Ollama's own `/api/chat`)
+  retired - `AgenticClient` replaces it as the one path every provider goes
+  through, built on a `pydantic_ai.Agent`. `LLMClient`'s contract
+  (`generate`/`generate_stream`/`cancel`) is unchanged, so `Orchestrator`
+  needed no changes to its call sites - see `04-llm-client/plan.md`'s
+  "Agentic rewrite" section for what changed under the hood (history
+  conversion, the async/sync streaming bridge, `CancellationToken`).
+- `Orchestrator.set_paused()`/`is_paused()` (`state_machine.py`, next to
+  the existing mic-mute pair) - blocks LLM calls only, mic/STT/wake-word
+  keep working. `main.py`'s `_build_dashboard_controls` now looks up
+  `agentic.providers.registry.get_provider(config.llm.backend).is_local`
+  to decide the tray's first LLM control: local provider (Ollama today)
+  keeps today's start/stop `ollama serve` control; a non-local provider
+  gets the pause toggle instead. No changes needed in `tray.py`/
+  `dashboard.py` - both already just render whatever `DashboardControl`
+  list they're given.
+- `config.yaml`'s `llm` section gained `api_key_env` (the env var *name*
+  to read a remote provider's key from - never the key itself, so it
+  never ends up in `config.yaml`/git). Switching providers is still a
+  config edit + restart, consistent with every other backend choice in
+  this config (`stt.backend`, `tts.backend`, ...) - a live tray/dashboard
+  picker is a bigger follow-up, not done here.
+
+### Verified
+
+Against a real local Ollama server (`qwen2.5:1.5b`) 2026-09-14: `generate`/
+`generate_stream` (real token deltas), multi-turn history recall across
+calls, the `get_current_datetime` tool actually being invoked (not the
+model guessing), mid-stream `cancel()` (the streaming thread exits
+cleanly, no hang), and the clear-error path when the provider is
+unreachable. Full suite (`pytest modules/ -q`) green — 316 passed,
+including new unit tests for `AgenticClient` (against pydantic-ai's
+built-in `TestModel`/`FunctionModel`, no real server) and the provider
+registry, plus a new `Orchestrator` test confirming `_think_and_speak`
+skips the LLM call entirely while paused.
+
+**Not yet confirmed**: a real end-to-end `scripts/dev.sh` voice turn with
+the rewritten client (only `AgenticClient` itself was exercised directly,
+not through the full mic→wake-word→STT→LLM→TTS pipeline), and the tray's
+Pause/Active control against a second, real non-local provider (no second
+provider is registered yet - only exercised by pointing `config.llm.backend`
+at a value not marked `is_local` and confirming the dashboard slot swaps).
+
+## Tool-calling reliability: qwen2.5:1.5b essentially never calls tools (2026-09-15, reported by the user)
+
+The user asked Gideon for the current date/time and got a hallucinated
+"random 2023 date" instead of the real answer from `get_current_datetime`
+(the example tool added in `09-agentic`) - reported live from
+`gideon.service`'s own log: *"can u use ur date time tool and tell"* ->
+*"The current date and time is 20:18 today, Thursday, September 3, 2023."*
+
+### Root cause
+
+Not a bug in `09-agentic`/`AgenticClient` - confirmed by hitting Ollama's
+`/v1/chat/completions` directly with the exact tool definition:
+`qwen2.5:1.5b` almost never returns a real `tool_calls` response
+(`finish_reason: "stop"`, no `tool_calls` field). Instead it either
+writes text that merely *looks* like a tool reference (e.g. `"The
+current local time is [get_current_datetime]"`), flatly refuses ("I am
+using my knowledge... without needing external tools"), or hallucinates
+a stale date from its training data - which is exactly the "random 2023
+date" the user saw. Tried and ruled out as fixes on their own:
+- Explicit prompt wording ("use your tool") - no effect.
+- `temperature=0` for more deterministic output - no effect, same
+  failure modes.
+- A system prompt explicitly instructing tool use for real-time
+  info - measurably helped (~0% -> ~1-in-3 success for `qwen2.5:1.5b`
+  alone) but nowhere near reliable on its own.
+
+Confirmed the wiring itself is correct by pointing the same code/tool at
+larger models already pulled on this machine: `llama3.2:3b` and
+`qwen3:8b` both reliably returned real `tool_calls` for the same prompt
+via direct `curl` testing. This is a **model capability limitation**,
+not a code defect - small (~1.5B parameter) local models are simply
+unreliable at OpenAI-style structured tool calling, and reliability
+scales with model size.
+
+### Fix applied
+
+User chose to switch the default model rather than keep `qwen2.5:1.5b` or
+prompt-engineer around it. `config.yaml`'s `llm.model` is now
+`llama3.2:3b` (also given the "always call tools, never guess" system
+prompt as a further, free improvement). Verified via `AgenticClient`
+against the real `config.yaml` end to end: the exact prompts that failed
+before now correctly call `get_current_datetime` and return the real
+current date/time about half the time (2/4 in one verification run) -
+a real, measured improvement over `qwen2.5:1.5b`'s effectively 0%, but
+**still not fully reliable** - `llama3.2:3b` sometimes still hallucinates
+a tool-shaped response instead of a real call (e.g. one run answered
+"I don't have real-time access... let me check with Google's date and
+time API" without an actual tool call). The user was told this
+explicitly before choosing - it's a genuine capability ceiling for a
+3B CPU-only local model, not something prompt tuning alone fixes.
+
+**Not yet done**: a real mic/voice round-trip with the new model+prompt
+(only `AgenticClient.generate_stream()` was exercised directly against
+the live config, not the full `scripts/dev.sh` pipeline) - and no
+further mitigation (e.g. a deterministic non-LLM fast-path for
+date/time-shaped queries) was attempted since the user didn't ask for
+one; worth revisiting if `llama3.2:3b`'s ~50% success rate turns out to
+be too unreliable in practice.
+
+## OpenRouter provider + `.env` overrides (2026-09-15, requested by the user)
+
+Same day as the `llama3.2:3b` fix above, the user decided local Ollama
+models weren't worth the tool-calling reliability fight ("this small
+model are wierd") and asked for an OpenRouter provider plus a free-model
+recommendation good at agentic/tool-use tasks, fast and light.
+
+### What was built
+
+- New `modules/09-agentic/src/agentic/providers/openrouter.py`, registered
+  in `providers/registry.py` alongside `ollama`. Uses pydantic-ai's
+  dedicated `pydantic_ai.providers.openrouter.OpenRouterProvider` rather
+  than a generic OpenAI-compatible `base_url` shim (which is all Ollama
+  gets, since it has no pydantic-ai model class of its own) -
+  `OpenRouterProvider` applies per-upstream-model tool-calling profiles
+  (qwen/anthropic/meta-llama/etc. quirks), which is directly relevant
+  given the tool-calling reliability problems this whole thread started
+  from. `is_local=False`, so it automatically gets the tray's Pause/Active
+  guard instead of a start/stop control (`main.py`'s existing
+  `is_local`-branching logic needed no changes at all).
+- **`.env` / `.env.example`** (new, at the repo root, `.env` gitignored):
+  the user didn't want their personal model pick forced on `config.yaml`
+  for anyone else using the repo, on top of the API key obviously never
+  being committable. `config/config.yaml`'s `llm.backend`/`api_key_env`
+  stay committed (shared architecture, like `stt.backend`), but
+  `llm.model` is now overridable via `.env`'s `GIDEON_LLM_MODEL` without
+  touching a tracked file. `shared/config.py`'s `load_config()` calls
+  `python-dotenv`'s `load_dotenv()` on the repo-root `.env` and applies
+  the override - **only when called with `path=None`** (the real default
+  every entry point uses); an explicit `path` (every existing test but
+  one) skips both, so a developer's own `.env` can never leak into a test
+  pointed at its own scratch config file. `python-dotenv` was already an
+  installed transitive dependency of `pydantic-ai`; added explicitly to
+  the root `pyproject.toml`.
+- `config/config.yaml`: `llm.backend: openrouter`,
+  `llm.api_key_env: OPENROUTER_API_KEY`,
+  `llm.model: nvidia/nemotron-3.5-lightning:free` (the committed shared
+  default - a real personal choice still goes in `.env`, not here).
+- `scripts/dev.sh`'s Ollama preflight became provider-aware
+  (`preflight_local_ollama`/`preflight_remote_llm` functions, branching
+  on `agentic.providers.registry.get_provider(...).is_local` the same way
+  `main.py`'s tray control already did): a local provider gets the
+  existing `ollama serve` start/health-check/model-pulled checks
+  unchanged; a remote provider gets a check that its API key env var is
+  actually set (from `.env` or the shell), `die`ing with the exact fix
+  otherwise - checked in one Python process so `.env`'s contents are
+  visible to the check (a bare bash `[ -n "$VAR" ]` would miss a
+  `.env`-only key, since bash never sources that file itself).
+- `docs/RUNBOOK.md` updated to describe both preflight paths and point at
+  `.env.example`.
+
+### Model choice: `nvidia/nemotron-3.5-lightning:free`
+
+Training data is stale for anything this recent, so the model catalog was
+pulled live from `https://openrouter.ai/api/v1/models` (2026-09-15) and
+filtered for `pricing.prompt == 0 && pricing.completion == 0` plus
+`"tools"` in `supported_parameters` - 22 free, tool-capable models, nearly
+all from post-cutoff model families. Shortlisted three fast/light
+candidates and the user picked **`nvidia/nemotron-3.5-lightning:free`**
+(MoE, 3B active/30B total params, OpenRouter's own description: built for
+"high-throughput agentic workloads") over `google/gemma-4-26b-a4b-it:free`
+(3.8B active/25.2B total, "near-31B quality") and `liquid/lfm-2.5-2.6b:free`
+(smallest at 2.6B dense, purpose-built for agent workflows but Liquid
+explicitly advises against it for agentic coding).
+
+**Real caveat, documented in code/config comments and `09-agentic/plan.md`**:
+OpenRouter caps `:free` models at 50 requests/day (20/min) until the
+account has purchased $10+ in credits (then 1000/day), and a single
+tool-using turn can cost 2 requests. This provider is meant to be used
+deliberately/occasionally - the tray's Pause/Active guard (built in the
+earlier agentic-rewrite session specifically for non-local providers) is
+the right tool for not burning through the daily cap by accident, not
+just a nice-to-have.
+
+**Not yet verified**: no OpenRouter API key was available in this
+session, so - unlike the Ollama-vs-Ollama comparison earlier in this
+file - `nvidia/nemotron-3.5-lightning:free`'s tool-call reliability is
+un-tested. Once the user has a real key (pasted into `.env`), the
+approved plan's verification steps should be run: hit
+`https://openrouter.ai/api/v1/chat/completions` directly with the
+`get_current_datetime` tool for a real `tool_calls` check, then the same
+prompts through `AgenticClient` end-to-end, then a real `scripts/dev.sh`
+voice/text turn. If this model underperforms, swap `GIDEON_LLM_MODEL` in
+`.env` to one of the other two shortlisted models - no code change
+needed, the provider is generic across any OpenRouter model id.
+
+Full suite (`pytest modules/ -q`) green - 325 passed, including new
+`openrouter` provider tests (mirroring the `ollama` ones) and new
+`.env`/env-override tests in `00-shared/tests/test_config.py`
+(override applies only for `load_config()`'s default path, missing
+`.env` is a no-op, explicit paths are never affected).
+
+## Agent-only demo + tool-call logging (2026-09-15, requested by the user)
+
+Same day as the OpenRouter work above, the user asked for two smaller
+follow-ups (jotted in a scratch `tmp.md`): "more detailed logs of agents
+with a prefix maybe agent or something", and "a demo/tmp file to play
+around only the agent" - both aimed at making the agent loop easier to
+watch/debug in isolation, directly motivated by how painful the earlier
+tool-calling reliability investigation was without any visibility into
+whether a tool call actually happened.
+
+### What was built
+
+- **Logging**: `AgenticClient` (`04-llm-client/src/llm_client/agentic_client.py`)
+  now logs to a `"agentic"` logger, and every tool in `09-agentic`'s
+  registry is wrapped in a small `_logged()` decorator
+  (`agentic/tools/registry.py`) that logs to `"agentic.tools"`. Since
+  `shared.logging_setup`'s format is `... %(name)s: %(message)s`, this
+  gives exactly the "prefix" the user asked for - every line reads
+  `agentic: ...` or `agentic.tools: ...`. INFO covers run/tool
+  start, finish (with elapsed time; streaming also logs delta count),
+  cancellation, and errors; full prompt/reply text is DEBUG-only
+  (mirrors `07-orchestrator`'s existing DEBUG-only "LLM token delta"
+  logging, so a normal run stays quiet at INFO). The tool wrapper uses
+  `functools.wraps`, confirmed (via `inspect.signature`) to preserve the
+  wrapped tool's name/docstring/signature so pydantic-ai's schema
+  generation sees the exact same shape it would from the unwrapped
+  function.
+- **`04-llm-client/src/llm_client/agent_demo.py`** (new): a standalone
+  REPL (`python -m llm_client.agent_demo`) that talks to `AgenticClient`
+  directly - no mic/wake-word/STT/TTS involved - replacing the
+  `chat_demo.py` that the agentic rewrite deleted without a replacement.
+  Turns on INFO logging for `agentic`/`agentic.tools` itself so tool
+  calls are visible while chatting; `--debug` bumps to DEBUG for full
+  prompt/reply text.
+
+### Verified
+
+Confirmed live against a scripted `pydantic_ai.models.function.FunctionModel`
+end-to-end through `AgenticClient.generate()` - the exact output:
+```
+agentic: agent ready: backend=ollama model=fake
+agentic: agent run starting (0 history turns)
+agentic.tools: tool call: get_current_datetime()
+agentic.tools: tool result: get_current_datetime -> 'Tuesday, September 15 2026 11:06' (0.000s)
+agentic: agent run finished in 0.02s
+```
+Unit-tested: `09-agentic/tests/test_tools_registry.py` (new - wrapper
+preserves name/doc/signature, calls through, logs call/result/errors)
+and new `caplog`-based tests in `04-llm-client/tests/test_agentic_client.py`
+(run start/finish, prompt/reply at DEBUG, stream start/finish with delta
+count, error path, cancel path). Full suite green - 337 passed (up from
+325).
+
+**Not yet done**: `agent_demo.py` hasn't been run interactively by hand
+yet - needs either a local Ollama server or a real OpenRouter key (see
+the still-open verification step in `09-agentic/plan.md`'s Verification
+status). `tmp.md` (the user's scratch note this work came from) was left
+alone rather than deleted unilaterally.
+
+## Agentic logs on the dashboard (2026-09-15, requested by the user)
+
+Follow-up to the tool-call logging above - user's ask: "can we show
+thoose logs on dashboard as well", after finding the terminal logs
+themselves weren't showing (see the previous entry's root cause: `main.py`
+never called `setup_logging()` for the "agentic"/"agentic.tools" loggers,
+now fixed).
+
+### What was built
+
+- **`shared.logging_setup.CallbackHandler`** (new) - a plain
+  `logging.Handler` that forwards each record as `"name: message"` text
+  to a callback, with a raising callback swallowed via `handleError` so a
+  UI hiccup can never take down logging elsewhere. Generic on purpose
+  (just wraps a `Callable[[str], None]`) rather than tray-specific, so
+  any future UI could reuse it the same way.
+- **`text_input.tray.TrayApp.append_log(message)`** (new) - adds one line
+  to the dashboard's existing activity-log deque (the same one
+  `set_status` already fed) without touching the tray icon's tooltip,
+  which stays reserved for the orchestrator's own single current-state
+  message. `set_status` now calls `append_log` internally instead of
+  touching `self._log` directly.
+- **`07-orchestrator/main.py`**: after constructing `tray_app`, attaches
+  one `CallbackHandler(tray_app.append_log)` to both the "agentic" and
+  "agentic.tools" loggers (alongside the `StreamHandler` `setup_logging()`
+  already gave them, so terminal output is unaffected) - every agent
+  run/tool-call log line now appears in the dashboard's activity log
+  panel too, interleaved with the orchestrator's own status lines.
+
+### Verified
+
+Unit-tested: `00-shared/tests/test_logging_setup.py` (`CallbackHandler`
+forwards `"name: message"`, swallows a raising callback) and
+`06-text-input/tests/test_tray_app.py` (`append_log` adds to the log
+without touching the icon title). Confirmed live end-to-end by
+replicating `main.py`'s exact wiring (`setup_logging` + `CallbackHandler`
++ a real `TrayApp`) against a scripted `FunctionModel` tool call through
+`AgenticClient.generate()` - the dashboard's `tray._log` deque ends up
+with the identical five lines the terminal shows. Full suite green - 340
+passed (up from 337).
+
+**Not yet done**: not confirmed against the real running app/dashboard
+window (needs the user to open "Dashboard..." from the tray during a
+real conversation) - the original "stuck on the time question" report
+from the previous entry is also still unresolved; the user should retry
+now that both the terminal and the dashboard will show exactly where a
+stuck run stops (no `agentic:` line at all, a `tool call` with no
+matching `tool result`, or `tool call`/`tool result` repeating forever
+without an `agent run finished`).

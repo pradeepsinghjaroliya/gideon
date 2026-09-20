@@ -1,6 +1,7 @@
+import logging
 import re
 
-from shared.logging_setup import setup_logging
+from shared.logging_setup import CallbackHandler, setup_logging
 
 # setup_logging sets propagate=False on purpose (so a module's own handler
 # doesn't double-log via any root handler the caller might configure), so
@@ -25,3 +26,27 @@ def test_setup_logging_does_not_duplicate_handlers():
 
     assert logger_a is logger_b
     assert len(logger_a.handlers) == 1
+
+
+def test_callback_handler_forwards_name_and_message():
+    received = []
+    logger = logging.getLogger("test.callback_handler")
+    logger.setLevel(logging.INFO)
+    logger.addHandler(CallbackHandler(received.append))
+
+    logger.info("hello %s", "world")
+
+    assert received == ["test.callback_handler: hello world"]
+
+
+def test_callback_handler_swallows_a_raising_callback():
+    def broken_callback(message: str) -> None:
+        raise RuntimeError("UI is gone")
+
+    logger = logging.getLogger("test.callback_handler_broken")
+    logger.setLevel(logging.INFO)
+    handler = CallbackHandler(broken_callback)
+    handler.handleError = lambda record: None  # silence pytest's "logging error" capture
+    logger.addHandler(handler)
+
+    logger.info("must not raise")  # must not propagate the callback's exception

@@ -140,11 +140,21 @@ class TrayApp:
         support a live tooltip, so a failure here must never take down the
         orchestrator's status reporting.
         """
-        self._log.append(message)
+        self.append_log(message)
         try:
             self._icon.title = f"Gideon - {message}"[:127]
         except Exception:
             pass
+
+    def append_log(self, message: str) -> None:
+        """Adds one line to the dashboard's activity log without touching
+        the tray icon's tooltip - `set_status` above calls this for the
+        orchestrator's own state changes, and `main.py` also wires this up
+        directly as a `logging.Handler` callback (see
+        `shared.logging_setup.CallbackHandler`) for the "agentic"/
+        "agentic.tools" loggers, so LLM run/tool-call activity shows up
+        here too without a live status/tooltip update for every log line."""
+        self._log.append(message)
 
     def set_icon_state(self, state: str) -> None:
         """Recolors the tray dot per `_STATE_COLORS` - called by the

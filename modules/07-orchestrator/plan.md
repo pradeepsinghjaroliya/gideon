@@ -333,6 +333,18 @@ confirmed on real hardware**, needs the user to watch the tray icon
 change color through a real conversation and confirm the slider audibly
 changes playback volume.
 
+**Also reachable from the agent itself (added 2026-09-20)**: `main.py`
+now calls `agentic.volume_bridge.bind(orchestrator.get_volume,
+orchestrator.set_volume)` right after constructing `orchestrator`, the
+same `set_volume`/`get_volume` this section describes - no second gain
+path. This lets `09-agentic`'s `get_gideon_volume`/`set_gideon_volume`
+tools change this same slider's value from a conversation ("turn your
+voice down"), not just the dashboard. See `09-agentic/plan.md`'s
+`gideon_volume_tool.py`/`volume_bridge.py` deliverable for why the
+bridge module exists (the dependency direction only ever goes
+`orchestrator -> agentic`, so `agentic` can't just hold a reference to
+`Orchestrator` directly).
+
 ## Diagnosing the volume report + two crash/hang bugs found and fixed
 (2026-08-30, reported by the user)
 

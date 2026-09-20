@@ -42,6 +42,18 @@ No hardware/audio involved, so this is pure unit-testable:
    class in a test (e.g. a `FakeSTTEngine` that returns a fixed string) —
    this just proves the Protocol shapes are usable, not a real integration.
 
+## `CallbackHandler` (added 2026-09-15, requested by the user)
+
+`src/shared/logging_setup.py` gained `CallbackHandler(logging.Handler)` -
+forwards each record's `"name: message"` text to a plain callback instead
+of a stream/file, with a raising callback swallowed via `handleError`.
+Generic on purpose: added for `07-orchestrator/main.py` to mirror the
+"agentic"/"agentic.tools" loggers into the tray dashboard's activity log
+(`text_input.tray.TrayApp.append_log` - see `06-text-input/plan.md`'s
+"Agentic logs on the dashboard" section and `docs/task.md`), but this
+module doesn't know that - it just wraps any `Callable[[str], None]`.
+Unit-tested in `test_logging_setup.py`.
+
 ## Out of scope
 
 - Anything audio, ML, or network related — that's every other module.

@@ -46,6 +46,11 @@ class STTEngine(Protocol):
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str: ...
 
 class LLMClient(Protocol):
+    # Implemented by `04-llm-client`'s `AgenticClient`, backed by
+    # `09-agentic`'s `pydantic_ai.Agent` + provider registry - the model
+    # may call tools in a loop before producing its final reply; that's
+    # invisible at this interface, callers just get the final text either
+    # way. `config.llm.backend` selects the provider (see `09-agentic`).
     def generate(self, prompt: str, history: list[dict]) -> str: ...
     # history is a list of {"role": "user"|"assistant", "content": str}
     def generate_stream(self, prompt: str, history: list[dict]) -> Iterator[str]: ...
@@ -131,10 +136,11 @@ stt:
   partial_model_size: tiny  # a second, smaller model just for that preview
 
 llm:
-  backend: ollama
-  model: qwen2.5:1.5b
-  base_url: http://localhost:11434
+  backend: ollama    # provider id - key into 09-agentic's provider registry
+  model: llama3.2:3b
+  base_url: http://localhost:11434  # only used by local providers (ollama)
   system_prompt: "You are a concise local voice assistant."
+  api_key_env: ""    # env var name holding an API key, for a remote provider
 
 tts:
   backend: piper
@@ -180,11 +186,12 @@ gideon/
     01-audio-io/       # AudioSource, AudioSink, VAD
     02-wake-word/      # WakeWordDetector
     03-stt/            # STTEngine
-    04-llm-client/     # LLMClient
+    04-llm-client/     # LLMClient (AgenticClient, backed by 09-agentic)
     05-tts/            # TTSEngine
     06-text-input/     # TextInputProvider
     07-orchestrator/   # wires everything, systemd service, state machine
     08-transcript-ui/  # on-screen live conversation transcript overlay
+    09-agentic/        # pydantic_ai.Agent + LLM provider registry/tools
       <name>/
         plan.md
         src/           # created when the module is implemented

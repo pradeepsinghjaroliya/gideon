@@ -1,5 +1,4 @@
-# Plain HTTP client for Ollama's /api/chat endpoint - no SDK needed for
-# one endpoint. Kept out of the root pyproject.toml to follow the same
-# "extra per-module deps live in the module's own requirements.txt"
-# convention as 01-audio-io/02-wake-word/03-stt.
-requests>=2.31.0
+# AgenticClient uses pydantic-ai's core Agent/CancellationToken/message
+# types directly - the openai/anthropic/etc. provider-specific extras
+# belong to whichever provider file in 09-agentic needs them, not here.
+pydantic-ai-slim>=2.43.0

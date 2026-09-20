@@ -5,6 +5,9 @@ __pycache__/
 *.egg-info/
 asterix_story_log.json
 
+# Personal secrets/overrides (API keys, GIDEON_LLM_MODEL) - see .env.example
+.env
+
 # train_wake_word.sh's default working directory (venv, cloned repos,
 # downloaded datasets, generated clips - tens of GB, never commit)
 modules/02-wake-word/training/run/

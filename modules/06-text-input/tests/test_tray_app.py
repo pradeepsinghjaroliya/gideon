@@ -70,6 +70,16 @@ def test_set_status_appends_to_log_and_updates_icon_title():
     assert icon.title == "Gideon - Listening - recording your question"
 
 
+def test_append_log_adds_to_the_log_without_touching_the_icon_title():
+    icon = FakeIcon()
+    app = TrayApp(on_text=lambda text: None, icon=icon)
+
+    app.append_log("agentic: agent run starting (0 history turns)")
+
+    assert list(app._log) == ["agentic: agent run starting (0 history turns)"]
+    assert not hasattr(icon, "title")  # unlike set_status, append_log never touches the tooltip
+
+
 def test_set_status_survives_icon_title_failure():
     class BrokenTitleIcon(FakeIcon):
         @property

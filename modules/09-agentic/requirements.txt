@@ -1,0 +1,5 @@
+# "openai" backs Ollama's OpenAI-compatible endpoint (providers/ollama.py);
+# "openrouter" backs providers/openrouter.py's dedicated OpenRouterProvider.
+# Adding a new provider that needs its own SDK (Anthropic, Gemini, ...)
+# means adding that extra here too, e.g. pydantic-ai-slim[openai,anthropic].
+pydantic-ai-slim[openai,openrouter]>=2.43.0

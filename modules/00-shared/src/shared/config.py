@@ -9,15 +9,20 @@ Each module should import only the dataclass for its own section, e.g.:
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 
 # repo_root/config/config.yaml, resolved relative to this file so it works
 # no matter which module's directory the caller runs from.
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[4] / "config" / "config.yaml"
+# repo_root/.env - personal secrets/overrides (see .env.example), gitignored.
+# A no-op when missing, e.g. a checkout that hasn't copied .env.example yet.
+DEFAULT_ENV_PATH = Path(__file__).resolve().parents[4] / ".env"
 
 
 class ConfigError(RuntimeError):
@@ -56,10 +61,15 @@ class SttConfig:
 
 @dataclass
 class LlmConfig:
+    # Provider id - a key into `agentic.providers.registry.PROVIDERS`
+    # (09-agentic), not just an Ollama-specific label anymore.
     backend: str = "ollama"
-    model: str = "qwen2.5:1.5b"
-    base_url: str = "http://localhost:11434"
+    model: str = "llama3.2:3b"
+    base_url: str = "http://localhost:11434"  # used by local providers (ollama)
     system_prompt: str = "You are a concise local voice assistant."
+    # Name of an env var to read an API key from, for a remote provider -
+    # never the key itself, so it never ends up in config.yaml/git.
+    api_key_env: str = ""
 
 
 @dataclass
@@ -126,12 +136,31 @@ _SECTION_BUILDERS = {
 }
 
 
+def _apply_llm_env_overrides(llm: LlmConfig) -> None:
+    """`GIDEON_LLM_MODEL`, if set, overrides `llm.model` - lets a personal
+    model pick (or one tied to a specific API key/quota) live in `.env`
+    instead of the committed `config.yaml` (see `.env.example`)."""
+    model_override = os.environ.get("GIDEON_LLM_MODEL")
+    if model_override:
+        llm.model = model_override
+
+
 def load_config(path: Path | str | None = None) -> Config:
     """Load config.yaml into a Config. Missing sections fall back to
     dataclass defaults; unknown top-level keys are ignored rather than
     erroring, so a module's not-yet-added section doesn't break loading.
+
+    `path=None` (the real default, used by every entry point) also loads
+    `.env` (a no-op if it doesn't exist) and applies its overrides - see
+    `_apply_llm_env_overrides`. An explicit `path` (every test in this
+    file bar `test_loads_seeded_repo_config`) skips both, so a developer's
+    personal `.env` can never affect a test pointed at its own scratch
+    config file.
     """
+    use_env_overrides = path is None
     config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
+    if use_env_overrides:
+        load_dotenv(DEFAULT_ENV_PATH)
 
     if not config_path.is_file():
         raise ConfigError(f"config file not found: {config_path}")
@@ -154,7 +183,10 @@ def load_config(path: Path | str | None = None) -> Config:
         except TypeError as exc:
             raise ConfigError(f"invalid field in config section '{key}': {exc}") from exc
 
-    return Config(**sections)
+    config = Config(**sections)
+    if use_env_overrides:
+        _apply_llm_env_overrides(config.llm)
+    return config
 
 
 def set_transcript_ui_enabled(value: bool, path: Path | str | None = None) -> None:

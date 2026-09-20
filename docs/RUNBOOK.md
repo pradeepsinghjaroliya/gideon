@@ -43,9 +43,21 @@ otherwise easy to forget:
   running (it would otherwise be holding the mic and tray), and reminds you
   to start it again afterwards. Also warns if another `orchestrator.main` is
   already running.
-- **Ollama** — reads `llm.base_url`/`llm.model` from `config/config.yaml`,
-  starts `ollama serve` detached if nothing is answering, waits for it, and
-  warns if the configured model has not been pulled.
+- **LLM provider** — for a local provider (`llm.backend: ollama`), reads
+  `llm.base_url`/`llm.model` from `config/config.yaml`, starts
+  `ollama serve` detached if nothing is answering, waits for it, and warns
+  if the configured model has not been pulled. For a remote provider
+  (`llm.backend: openrouter`), skips all of that and instead checks that
+  `llm.api_key_env`'s named variable is actually set (from `.env` or your
+  shell), `die`ing with the exact fix if it's missing.
+- **API keys / personal overrides** — copy `.env.example` to `.env`
+  (gitignored) at the repo root and fill in your OpenRouter API key.
+  `.env` also accepts `GIDEON_LLM_MODEL` to override `config.yaml`'s
+  `llm.model` without editing a tracked file - useful since the model is
+  more of a personal/quota choice than a shared project setting.
+  `gideon.service` picks up the same `.env` automatically (it's loaded
+  from the repo root, not from the calling shell's environment), so
+  there's nothing extra to configure for the background service.
 
 Flags:
 
