@@ -26,7 +26,7 @@ stt:
 
 llm:
   # Provider id - a key into modules/09-agentic's provider registry:
-  # "ollama" (local), "openrouter" or "fireworks" (hosted, need
+  # "ollama" (local), "openrouter", "fireworks", or "cerebras" (hosted, need
   # api_key_env below).
   # 2026-09-15: switched from ollama to openrouter - local models
   # (qwen2.5:1.5b, then llama3.2:3b) were unreliable at real tool calling
@@ -37,7 +37,7 @@ llm:
   # shared/rate-limited capacity, adding 45-190s of latency per reply
   # (confirmed via agentic's stream-timing logs - tool calls themselves
   # ran in ~0s). Paid Fireworks capacity trades that for real $ cost.
-  backend: fireworks
+  backend: cerebras
   # Shared default - override per-machine via .env's GIDEON_LLM_MODEL
   # (see .env.example) instead of editing this committed file. Same
   # Nemotron 3.5 Lightning (30B MoE, 3B active) as the old OpenRouter
@@ -46,8 +46,8 @@ llm:
   # explicitly marketed by Fireworks for agent/tool-calling workloads.
   # Verified against fireworks.ai's model page on 2026-09-20; not yet
   # empirically timed/cost-checked against the $5 balance.
-  model: accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b
-  base_url: http://localhost:11434  # unused by fireworks/openrouter - stays ready for switching back to ollama
+  model: qwen-3.8-27b
+  base_url: http://localhost:11434  # unused by hosted providers - stays ready for switching back to ollama
   # 2026-09-20: rewritten for the always-on-laptop persona (was a generic
   # "concise local voice assistant" line). Still keeps the explicit
   # tool-over-guessing instruction - measurably (not perfectly) improves
@@ -70,7 +70,7 @@ llm:
   # Name of an env var to read an API key from, for a remote provider -
   # leave blank for ollama. Never put the key itself here - put the
   # actual value in .env (see .env.example), gitignored.
-  api_key_env: FIREWORKS_API_KEY
+  api_key_env: CEREBRAS_API_KEY
 
 tts:
   backend: piper

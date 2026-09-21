@@ -1,6 +1,7 @@
 import pytest
 from pydantic_ai.models.openai import OpenAIChatModel
 
+from agentic.providers.cerebras import MissingApiKeyError as CerebrasMissingApiKeyError
 from agentic.providers.fireworks import MissingApiKeyError as FireworksMissingApiKeyError
 from agentic.providers.openrouter import MissingApiKeyError
 from agentic.providers.registry import PROVIDERS, UnknownProviderError, get_provider
@@ -33,7 +34,7 @@ def test_unknown_provider_raises_clear_error():
 
 
 def test_registry_is_a_plain_dict_keyed_by_id():
-    assert set(PROVIDERS) == {"ollama", "openrouter", "fireworks"}
+    assert set(PROVIDERS) == {"ollama", "openrouter", "fireworks", "cerebras"}
 
 
 def test_openrouter_registered_and_not_local():
@@ -103,6 +104,44 @@ def test_fireworks_build_model_succeeds_with_api_key_set(monkeypatch):
         backend="fireworks",
         model="accounts/fireworks/models/llama-v3p1-8b-instruct",
         api_key_env="SOME_FIREWORKS_KEY",
+    )
+    model = provider.build_model(config)
+    assert isinstance(model, OpenAIChatModel)
+
+
+def test_cerebras_registered_and_not_local():
+    provider = get_provider("cerebras")
+    assert provider.id == "cerebras"
+    assert provider.is_local is False
+
+
+def test_cerebras_build_model_raises_without_api_key_env(monkeypatch):
+    monkeypatch.delenv("SOME_UNSET_CEREBRAS_KEY", raising=False)
+    provider = get_provider("cerebras")
+    config = LlmConfig(backend="cerebras", model="llama3.1-8b", api_key_env="")
+    with pytest.raises(CerebrasMissingApiKeyError, match="api_key_env"):
+        provider.build_model(config)
+
+
+def test_cerebras_build_model_raises_when_env_var_unset(monkeypatch):
+    monkeypatch.delenv("SOME_UNSET_CEREBRAS_KEY", raising=False)
+    provider = get_provider("cerebras")
+    config = LlmConfig(
+        backend="cerebras",
+        model="llama3.1-8b",
+        api_key_env="SOME_UNSET_CEREBRAS_KEY",
+    )
+    with pytest.raises(CerebrasMissingApiKeyError, match="SOME_UNSET_CEREBRAS_KEY"):
+        provider.build_model(config)
+
+
+def test_cerebras_build_model_succeeds_with_api_key_set(monkeypatch):
+    monkeypatch.setenv("SOME_CEREBRAS_KEY", "csk-fake")
+    provider = get_provider("cerebras")
+    config = LlmConfig(
+        backend="cerebras",
+        model="llama3.1-8b",
+        api_key_env="SOME_CEREBRAS_KEY",
     )
     model = provider.build_model(config)
     assert isinstance(model, OpenAIChatModel)

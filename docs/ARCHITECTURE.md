@@ -136,7 +136,7 @@ stt:
   partial_model_size: tiny  # a second, smaller model just for that preview
 
 llm:
-  backend: ollama    # provider id - key into 09-agentic's provider registry
+  backend: ollama    # provider id: ollama, openrouter, fireworks, or cerebras
   model: llama3.2:3b
   base_url: http://localhost:11434  # only used by local providers (ollama)
   system_prompt: "You are a concise local voice assistant."

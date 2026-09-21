@@ -7,6 +7,7 @@ To add a provider: write `providers/<id>.py` exporting a
 from __future__ import annotations
 
 from .base import ProviderDefinition
+from .cerebras import CEREBRAS
 from .fireworks import FIREWORKS
 from .ollama import OLLAMA
 from .openrouter import OPENROUTER
@@ -15,6 +16,7 @@ PROVIDERS: dict[str, ProviderDefinition] = {
     OLLAMA.id: OLLAMA,
     OPENROUTER.id: OPENROUTER,
     FIREWORKS.id: FIREWORKS,
+    CEREBRAS.id: CEREBRAS,
 }
 
 

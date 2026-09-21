@@ -104,10 +104,22 @@ def test_active_session_id_finds_active_row():
 
 
 def test_active_session_id_raises_when_none_active():
-    run = _fake_run(list_sessions_output="3 1001 pjaroliya seat0 tty2 online no -\n")
+    run = _fake_run(list_sessions_output="3 1001 pjaroliya - 4455 manager - no -\n")
 
-    with pytest.raises(BrightnessError, match="no active login session"):
+    with pytest.raises(BrightnessError, match="no active or seated user login session"):
         _active_session_id(run=run)
+
+
+def test_active_session_id_falls_back_to_seated_user_session(monkeypatch):
+    monkeypatch.setattr("os.getuid", lambda: 1000)
+    run = _fake_run(
+        list_sessions_output=(
+            "2 1000 zen seat0 3312 user tty2 no -\n"
+            "3 1000 zen - 4455 manager - no -\n"
+        )
+    )
+
+    assert _active_session_id(run=run) == "2"
 
 
 def test_active_session_id_raises_when_loginctl_fails():

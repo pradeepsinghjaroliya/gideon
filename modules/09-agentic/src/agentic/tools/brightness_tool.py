@@ -16,6 +16,7 @@ subcommand on this systemd version, so `busctl call` is used directly.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -57,11 +58,30 @@ def _active_session_id(*, run: RunFn = subprocess.run) -> str:
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise BrightnessError(f"failed to list login sessions: {exc}") from exc
+
+    seated_user_session: str | None = None
+    current_uid = str(os.getuid())
     for line in result.stdout.splitlines():
         fields = line.split()
         if "active" in fields:
             return fields[0]
-    raise BrightnessError("no active login session found")
+        # Newer/system-specific `loginctl list-sessions` output may not
+        # include an Active column. In that shape the useful graphical
+        # session looks like:
+        #   SESSION UID USER SEAT LEADER CLASS TTY IDLE SINCE
+        # Prefer the current user's seated "user" session over the
+        # per-user systemd "manager" session, which cannot set brightness.
+        if (
+            seated_user_session is None
+            and len(fields) >= 6
+            and fields[1] == current_uid
+            and fields[3] != "-"
+            and fields[5] == "user"
+        ):
+            seated_user_session = fields[0]
+    if seated_user_session is not None:
+        return seated_user_session
+    raise BrightnessError("no active or seated user login session found")
 
 
 def _set_via_logind(
