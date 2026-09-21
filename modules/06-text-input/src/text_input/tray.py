@@ -28,6 +28,8 @@ longer needs its own popup provider or standalone status window.
 
 from __future__ import annotations
 
+import logging
+import os
 import queue
 import threading
 import tkinter as tk
@@ -38,6 +40,8 @@ import pystray
 from PIL import Image, ImageDraw
 
 from text_input.dashboard import DashboardControl, DashboardSlider, build_dashboard_window
+
+_logger = logging.getLogger("text_input.tray")
 
 _DASHBOARD = object()
 _QUIT = object()
@@ -204,6 +208,15 @@ class TrayApp:
             self._on_quit()
 
     def _show_dashboard_window(self) -> None:
+        """Opens the dashboard panel. A no-op (logged, not raised) when
+        there's no graphical display - e.g. the service starting before
+        the session's `$DISPLAY`/`$WAYLAND_DISPLAY` is imported - since
+        `tk.Tk()` would otherwise raise `TclError` and take down the whole
+        tray/orchestrator loop that called this from `run()`. Mirrors the
+        same check in `transcript_ui.launcher.OverlayProcess.start`."""
+        if not (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")):
+            _logger.warning("no graphical display detected - can't open the dashboard window")
+            return
         root = tk.Tk()
         build_dashboard_window(
             root,

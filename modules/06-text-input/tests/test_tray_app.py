@@ -170,6 +170,20 @@ def test_dashboard_request_opens_dashboard_window():
     assert calls == [True]
 
 
+def test_show_dashboard_window_is_a_noop_with_no_graphical_display(monkeypatch):
+    """Regression test: the tray used to call `tk.Tk()` unguarded, which
+    raises `TclError` and takes down the whole run() loop (and the
+    orchestrator with it) when there's no $DISPLAY/$WAYLAND_DISPLAY - e.g.
+    gideon.service starting before the session's display env is
+    imported."""
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    icon = FakeIcon()
+    app = TrayApp(on_text=lambda text: None, icon=icon)
+
+    app._show_dashboard_window()
+
+
 def test_quick_menu_controls_render_as_live_native_items():
     state = {"label": "Mic: On"}
     clicks = []
