@@ -65,7 +65,7 @@ install_deps() {
     # Per the repo convention, extra/ML deps live in each module's own
     # requirements.txt rather than pyproject.toml. 01-audio-io's pins the
     # PyTorch CPU wheel index; the rest are plain PyPI.
-    for module in 01-audio-io 03-stt 04-llm-client 05-tts 06-text-input 07-orchestrator 08-transcript-ui; do
+    for module in 01-audio-io 03-stt 04-llm-client 05-tts 06-text-input 07-orchestrator 08-transcript-ui 09-agentic; do
         info "installing modules/$module/requirements.txt"
         "$PIP" install -r "modules/$module/requirements.txt"
     done
@@ -151,46 +151,83 @@ if command -v pgrep >/dev/null 2>&1 && pgrep -f "[p]ython.* -m orchestrator\.mai
     warn "another 'orchestrator.main' is already running - two instances will fight over the mic and the overlay socket"
 fi
 
-# --- Ollama ----------------------------------------------------------------
+# --- LLM provider -----------------------------------------------------------
 
-LLM_INFO="$("$PY" -c 'from shared.config import load_config; c = load_config().llm; print(c.base_url); print(c.model)')"
-LLM_URL="$(printf '%s\n' "$LLM_INFO" | sed -n 1p)"
-LLM_MODEL="$(printf '%s\n' "$LLM_INFO" | sed -n 2p)"
+# One python process so `.env` (loaded by `load_config()` itself, via
+# python-dotenv) is visible when checking the API key - a plain bash
+# `[ -n "$OPENROUTER_API_KEY" ]` would miss a key that only lives in
+# `.env`, since bash never sources that file itself.
+LLM_INFO="$("$PY" -c '
+from shared.config import load_config
+from agentic.providers.registry import get_provider
+import os
+c = load_config().llm
+provider = get_provider(c.backend)
+print(provider.is_local)
+print(c.backend)
+print(c.base_url)
+print(c.model)
+print(c.api_key_env)
+print(bool(c.api_key_env and os.environ.get(c.api_key_env)))
+')"
+LLM_IS_LOCAL="$(printf '%s\n' "$LLM_INFO" | sed -n 1p)"
+LLM_BACKEND="$(printf '%s\n' "$LLM_INFO" | sed -n 2p)"
+LLM_URL="$(printf '%s\n' "$LLM_INFO" | sed -n 3p)"
+LLM_MODEL="$(printf '%s\n' "$LLM_INFO" | sed -n 4p)"
+LLM_API_KEY_ENV="$(printf '%s\n' "$LLM_INFO" | sed -n 5p)"
+LLM_API_KEY_SET="$(printf '%s\n' "$LLM_INFO" | sed -n 6p)"
 
-llm_up() {
-    "$PY" -c 'import sys, urllib.request
+preflight_local_ollama() {
+    llm_up() {
+        "$PY" -c 'import sys, urllib.request
 try: urllib.request.urlopen(sys.argv[1], timeout=1)
 except Exception: sys.exit(1)' "$LLM_URL" >/dev/null 2>&1
+    }
+
+    if llm_up; then
+        ok "Ollama already serving at $LLM_URL"
+    elif [ "$START_OLLAMA" -eq 0 ]; then
+        warn "Ollama is not running at $LLM_URL and --no-ollama was passed - replies will fail until it's up"
+    elif command -v ollama >/dev/null 2>&1; then
+        info "starting 'ollama serve' in the background"
+        # Detached and log-to-file, so Ctrl+C on Gideon doesn't take the LLM
+        # with it - matches how orchestrator/ollama_control.py launches it.
+        nohup ollama serve >"${TMPDIR:-/tmp}/gideon-ollama.log" 2>&1 &
+        for _ in $(seq 1 20); do
+            llm_up && break
+            sleep 0.5
+        done
+        if llm_up; then
+            ok "Ollama up at $LLM_URL (log: ${TMPDIR:-/tmp}/gideon-ollama.log)"
+        else
+            warn "'ollama serve' didn't come up within 10s - see ${TMPDIR:-/tmp}/gideon-ollama.log"
+        fi
+    else
+        warn "'ollama' is not on PATH - install it, or the LLM stage will fail (https://ollama.com)"
+    fi
+
+    if llm_up && command -v ollama >/dev/null 2>&1; then
+        if ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$LLM_MODEL"; then
+            ok "model '$LLM_MODEL' is pulled"
+        else
+            warn "model '$LLM_MODEL' (config/config.yaml llm.model) isn't pulled - run: ollama pull $LLM_MODEL"
+        fi
+    fi
 }
 
-if llm_up; then
-    ok "Ollama already serving at $LLM_URL"
-elif [ "$START_OLLAMA" -eq 0 ]; then
-    warn "Ollama is not running at $LLM_URL and --no-ollama was passed - replies will fail until it's up"
-elif command -v ollama >/dev/null 2>&1; then
-    info "starting 'ollama serve' in the background"
-    # Detached and log-to-file, so Ctrl+C on Gideon doesn't take the LLM with
-    # it - matches how orchestrator/ollama_control.py launches it.
-    nohup ollama serve >"${TMPDIR:-/tmp}/gideon-ollama.log" 2>&1 &
-    for _ in $(seq 1 20); do
-        llm_up && break
-        sleep 0.5
-    done
-    if llm_up; then
-        ok "Ollama up at $LLM_URL (log: ${TMPDIR:-/tmp}/gideon-ollama.log)"
+preflight_remote_llm() {
+    if [ "$LLM_API_KEY_SET" = "True" ]; then
+        ok "llm.backend='$LLM_BACKEND' - API key found (\$$LLM_API_KEY_ENV, via .env or your shell)"
     else
-        warn "'ollama serve' didn't come up within 10s - see ${TMPDIR:-/tmp}/gideon-ollama.log"
+        die "llm.backend='$LLM_BACKEND' needs an API key: set '$LLM_API_KEY_ENV' in .env \
+(copy .env.example to .env at the repo root) or export it yourself"
     fi
-else
-    warn "'ollama' is not on PATH - install it, or the LLM stage will fail (https://ollama.com)"
-fi
+}
 
-if llm_up && command -v ollama >/dev/null 2>&1; then
-    if ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$LLM_MODEL"; then
-        ok "model '$LLM_MODEL' is pulled"
-    else
-        warn "model '$LLM_MODEL' (config/config.yaml llm.model) isn't pulled - run: ollama pull $LLM_MODEL"
-    fi
+if [ "$LLM_IS_LOCAL" = "True" ]; then
+    preflight_local_ollama
+else
+    preflight_remote_llm
 fi
 
 # --- tests -----------------------------------------------------------------

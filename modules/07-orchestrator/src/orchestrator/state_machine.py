@@ -174,6 +174,7 @@ class Orchestrator:
 
         self.history: list[dict] = []
         self._running = False
+        self._paused = False
         self._user_muted_mic = False
         self._auto_muted_for_speaking = False
         self._speaking = False
@@ -306,6 +307,17 @@ class Orchestrator:
 
     def is_mic_muted(self) -> bool:
         return self._user_muted_mic
+
+    def set_paused(self, value: bool) -> None:
+        """Blocks LLM calls only, from the tray's "AI: Paused/Active"
+        control shown for non-local providers (see `main.py`) - a guard
+        against an accidental background conversation spending real API
+        credits. Unlike `set_mic_muted`, mic/wake-word/STT keep working
+        while paused: `_think_and_speak()` just skips the LLM call."""
+        self._paused = value
+
+    def is_paused(self) -> bool:
+        return self._paused
 
     def set_online(self, value: bool) -> None:
         """Offline means fully inactive - not watching for the wake word
@@ -594,6 +606,11 @@ class Orchestrator:
         recorded to history in the `finally` below, so the conversation
         can continue normally on the next turn instead of getting stuck.
         """
+        if self._paused:
+            self._log.info("skipping LLM call - AI is paused")
+            self._set_status("Paused - not sending to the LLM", state="idle")
+            return
+
         reply_parts: list[str] = []
         self._stop_requested = False
         self._responding = True

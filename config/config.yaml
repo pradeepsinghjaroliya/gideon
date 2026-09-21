@@ -25,10 +25,52 @@ stt:
   partial_model_size: tiny
 
 llm:
-  backend: ollama
-  model: qwen2.5:1.5b
-  base_url: http://localhost:11434
-  system_prompt: "You are a concise local voice assistant."
+  # Provider id - a key into modules/09-agentic's provider registry:
+  # "ollama" (local), "openrouter" or "fireworks" (hosted, need
+  # api_key_env below).
+  # 2026-09-15: switched from ollama to openrouter - local models
+  # (qwen2.5:1.5b, then llama3.2:3b) were unreliable at real tool calling
+  # even after model/prompt tuning; see docs/task.md's "Tool-calling
+  # reliability" note.
+  # 2026-09-20: switched from openrouter to fireworks - the free
+  # OpenRouter model (nvidia/nemotron-3.5-lightning:free) was queued on
+  # shared/rate-limited capacity, adding 45-190s of latency per reply
+  # (confirmed via agentic's stream-timing logs - tool calls themselves
+  # ran in ~0s). Paid Fireworks capacity trades that for real $ cost.
+  backend: fireworks
+  # Shared default - override per-machine via .env's GIDEON_LLM_MODEL
+  # (see .env.example) instead of editing this committed file. Same
+  # Nemotron 3.5 Lightning (30B MoE, 3B active) as the old OpenRouter
+  # free pick, now on Fireworks' paid/dedicated capacity - cheapest
+  # serverless tier ($0.05/$0.20 per M tokens), 262k context, and
+  # explicitly marketed by Fireworks for agent/tool-calling workloads.
+  # Verified against fireworks.ai's model page on 2026-09-20; not yet
+  # empirically timed/cost-checked against the $5 balance.
+  model: accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b
+  base_url: http://localhost:11434  # unused by fireworks/openrouter - stays ready for switching back to ollama
+  # 2026-09-20: rewritten for the always-on-laptop persona (was a generic
+  # "concise local voice assistant" line). Still keeps the explicit
+  # tool-over-guessing instruction - measurably (not perfectly) improves
+  # tool-call reliability for real-time queries like date/time; see
+  # docs/task.md. Added: no markdown, since replies go straight to Piper
+  # TTS and "**19:24**" gets spoken as literal asterisks; and an honest-
+  # about-limits line, since the only tool today is get_current_datetime
+  # (see agentic/tools/registry.py) and everything else is base-model
+  # knowledge with no way to check the web or the machine.
+  system_prompt: >-
+    You are Gideon, a voice assistant that lives on this laptop and stays
+    ready to help whenever summoned by wake word or hotkey. Keep replies
+    short and conversational, like a spoken answer, not an essay. Never
+    use markdown, headings, or bullet lists - your text is spoken aloud
+    by a TTS engine, so write plain sentences only. Always call the
+    relevant tool instead of guessing when the user asks for real-time
+    information such as the current date or time; never answer date/time
+    questions from memory. If you don't have a tool for something and
+    aren't sure, say so plainly instead of guessing.
+  # Name of an env var to read an API key from, for a remote provider -
+  # leave blank for ollama. Never put the key itself here - put the
+  # actual value in .env (see .env.example), gitignored.
+  api_key_env: FIREWORKS_API_KEY
 
 tts:
   backend: piper
@@ -41,7 +83,7 @@ text_input:
 # Appears when the wake word fires, streams both sides of the conversation
 # live, and fades out once Gideon has been idle for `hide_after_seconds`.
 transcript_ui:
-  enabled: false
+  enabled: true
   autostart: true          # orchestrator starts/stops the overlay process
   socket_path: null        # null = $XDG_RUNTIME_DIR/gideon-transcript.sock
   width: 720               # px, capped at 55% of the monitor width

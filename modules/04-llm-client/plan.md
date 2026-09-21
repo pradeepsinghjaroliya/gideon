@@ -26,28 +26,37 @@ model download/quantization/serving; swapping models is just changing
 
 ## Deliverables
 
-- `src/llm_client/ollama_client.py` — `OllamaClient` implementing
+**Superseded by the 2026-09-14 agentic rewrite below** — `ollama_client.py`
+(`OllamaClient`, direct HTTP to Ollama's `/api/chat`) and `chat_demo.py`
+were retired and deleted; `AgenticClient` (`src/llm_client/agentic_client.py`)
+and `src/llm_client/agent_demo.py` (added 2026-09-15, see "Agent-only demo
++ tool-call logging" below) are their replacements, described in the
+"Agentic rewrite" section further down. Kept here only as the historical
+record of this module's original (pre-agentic) shape:
+
+- ~~`src/llm_client/ollama_client.py` — `OllamaClient` implementing
   `LLMClient`: `generate(prompt, history)` builds the chat messages array
   (system prompt from `config.llm.system_prompt` + `history` +
   new user turn) and calls Ollama's `/api/chat` endpoint, returns the
   assistant's text. Handle the case where Ollama isn't running with a clear
-  error, not a raw connection-refused traceback.
-- A standalone CLI (`src/llm_client/chat_demo.py`) that's a simple REPL:
+  error, not a raw connection-refused traceback.~~
+- ~~A standalone CLI (`src/llm_client/chat_demo.py`) that's a simple REPL:
   type a line, get a response printed, history kept in-memory for the
   session — proves multi-turn context works before anything voice-related
-  touches it.
+  touches it.~~
 
 ## Standalone test plan
 
 1. `ollama pull <model>` for whatever model is chosen (start with something
    that fits the machine's RAM comfortably — see open decision below).
-2. Run `chat_demo.py`, have a multi-turn conversation, confirm the model
-   remembers earlier turns (e.g. "my name is X" then later "what's my
-   name?").
+2. Run `agent_demo.py` (`chat_demo.py`'s replacement), have a multi-turn
+   conversation, confirm the model remembers earlier turns (e.g. "my name
+   is X" then later "what's my name?").
 3. Time a typical response and note it here — this is usually the biggest
    chunk of end-to-end latency, so it's worth knowing early.
-4. Test the "Ollama not running" error path deliberately (stop the
-   service, run the demo, confirm the error message is clear).
+4. Test the "Ollama not running"/"provider unreachable" error path
+   deliberately (stop the service, or unset the API key, run the demo,
+   confirm the error message is clear).
 
 ## Out of scope
 
@@ -60,11 +69,23 @@ model download/quantization/serving; swapping models is just changing
 
 ## Open decisions for this module
 
-- Final model choice for `config.yaml`: **`qwen2.5:1.5b`, confirmed** (see
-  Verification status below) — this machine is CPU-only (no GPU), and the
-  pre-existing stub `llama3.1:8b` measured 31-35s per short reply, far too
-  slow for a voice assistant. `qwen2.5:1.5b` answered the same prompts
-  correctly in 1-4s typical.
+- Final model choice for `config.yaml`, plain chat (pre-agentic):
+  **`qwen2.5:1.5b`** (see Verification status below) — this machine is
+  CPU-only (no GPU), and the pre-existing stub `llama3.1:8b` measured
+  31-35s per short reply, far too slow for a voice assistant.
+  `qwen2.5:1.5b` answered the same prompts correctly in 1-4s typical.
+  **Superseded 2026-09-15** once tool use was added - see
+  `../../docs/task.md`'s "Tool-calling reliability" note: `qwen2.5:1.5b`
+  essentially never makes a real tool call, so `config.yaml` briefly
+  defaulted to `llama3.2:3b` instead (slower, 1.3-7.8s typical, but tool
+  calls actually work most of the time).
+  **Superseded again, same day**: the user asked to move off local
+  Ollama models entirely for tool use and try OpenRouter's free tier -
+  `config.yaml`'s `llm.backend` is now `openrouter`
+  (`nvidia/nemotron-3.5-lightning:free`, provisional/unverified - see
+  `09-agentic/plan.md`'s Open decisions). `OllamaControl`/`ollama serve`
+  and the `ollama` provider file are untouched and still fully usable by
+  switching `llm.backend` back.
 
 ## Setup
 
@@ -153,6 +174,83 @@ Unit-tested (8 new tests, scripted streaming response/close tracking) -
 needs the user to verify token-by-token streaming actually reduces felt
 latency in practice, and that "Stop generating" interrupts a real
 in-progress Ollama request rather than just a scripted test double.
+
+## Agentic rewrite (2026-09-14, requested by the user)
+
+The user's ask: move from a single-shot chat completion to an agentic
+architecture (tool use), with LLM providers as swappable/addable files.
+`OllamaClient` (direct HTTP to Ollama's own `/api/chat`) is retired -
+`AgenticClient` (`src/llm_client/agentic_client.py`) replaces it as the
+one path every provider goes through, built on `09-agentic`'s
+`pydantic_ai.Agent` + provider registry. See `09-agentic/plan.md` for why
+pydantic-ai (an initial Cline SDK direction was ruled out: Node/TS-only,
+no Python bindings, this is a pure-Python project).
+
+`LLMClient`'s contract (`generate`/`generate_stream`/`cancel`) is
+unchanged - `Orchestrator` needed no changes to its call sites. What
+changed under the hood:
+
+- Conversation history stays exactly where it was
+  (`Orchestrator.history: list[dict]`, passed fresh into every call) -
+  `AgenticClient` converts it to/from pydantic-ai's typed message list on
+  the way in/out, so there's no new session model to reason about.
+- `generate_stream()`'s old `threading.Lock`-guarded `requests.Response`
+  ownership becomes a dedicated thread running its own asyncio event loop
+  (pydantic-ai's streaming API is async) feeding a `queue.Queue` the
+  calling thread reads from - `Orchestrator` still gets a plain
+  synchronous `Iterator[str]`, asyncio never leaks past this client.
+- `cancel()` now holds a `pydantic_ai.CancellationToken` instead of a
+  `requests.Response` - same ownership pattern, and the token happens to
+  be documented as thread-safe/idempotent by pydantic-ai itself.
+
+Unit-tested against `pydantic_ai`'s built-in `TestModel`/`FunctionModel`
+(no real server needed - `tests/test_agentic_client.py`), and confirmed
+against a real local Ollama server the same way `OllamaClient` was
+originally (see `09-agentic/plan.md`'s Verification status).
+
+## Agent-only demo + tool-call logging (2026-09-15, requested by the user)
+
+Two small follow-ups, both aimed at making it easier to watch/debug the
+agent loop in isolation - directly motivated by the tool-calling
+reliability debugging earlier the same day (see `docs/task.md`'s
+"Tool-calling reliability" and "OpenRouter provider" notes), where the
+only way to tell whether a reply actually used a tool was to read raw
+Ollama HTTP responses by hand.
+
+- **`src/llm_client/agent_demo.py`** (new) - `chat_demo.py`'s spiritual
+  successor: a standalone REPL (`python -m llm_client.agent_demo`) that
+  talks to `AgenticClient` directly - no mic, wake word, STT, or TTS
+  involved, so trying a new model/provider or watching tool-call behavior
+  doesn't require the whole voice pipeline up. Turns on INFO logging for
+  the `agentic`/`agentic.tools` loggers itself (see below); `--debug`
+  bumps that to DEBUG for full prompt/reply text too.
+- **Logging** added to `AgenticClient` (logger `"agentic"`, in
+  `agentic_client.py`) and to every tool in `09-agentic`'s registry
+  (logger `"agentic.tools"`, via a `functools.wraps`-based `_logged()`
+  wrapper in `agentic/tools/registry.py` that preserves the wrapped
+  tool's name/docstring/signature, so pydantic-ai's schema generation is
+  unaffected). `shared.logging_setup`'s shared format already prefixes
+  every line with `%(name)s`, so this shows up as plain `agentic:` /
+  `agentic.tools:` lines - e.g.:
+  ```
+  agentic: agent run starting (0 history turns)
+  agentic.tools: tool call: get_current_datetime()
+  agentic.tools: tool result: get_current_datetime -> 'Tuesday, ...' (0.000s)
+  agentic: agent run finished in 0.02s
+  ```
+  INFO covers run/tool start, finish (with elapsed time and, for
+  streaming, delta count), cancellation, and errors; full prompt/reply
+  text is DEBUG only (mirrors `07-orchestrator`'s existing "LLM token
+  delta" DEBUG-only logging, so a normal run stays quiet at INFO).
+
+Unit-tested (`test_agentic_client.py`'s new logging tests via `caplog`,
+`09-agentic/tests/test_tools_registry.py`) and confirmed live against a
+scripted `FunctionModel` end-to-end through `AgenticClient.generate()` -
+the tool call/result and run start/finish lines all appear in the right
+order with the right logger names. **Not yet exercised interactively**
+(`agent_demo.py` itself hasn't been run by hand yet - needs either a
+local Ollama server or a real OpenRouter key, per the still-open
+verification step in `09-agentic/plan.md`).
 
 ## When done
 

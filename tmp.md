@@ -1,0 +1,2 @@
+- more detailed logs of agents with a prefix maybe agent or something
+- a demo/tmp file to play around only the agent

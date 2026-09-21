@@ -298,6 +298,28 @@ actually change color through a real conversation, click the new
 LLM/mic quick-menu entries, and confirm the slider audibly changes
 playback volume.
 
+## Agentic logs on the dashboard (2026-09-15, requested by the user)
+
+`TrayApp.append_log(message)` (new) adds one line to the dashboard's
+activity-log deque (`self._log`) without touching the tray icon's
+tooltip - unlike `set_status`, which does both and now calls `append_log`
+internally instead of touching `self._log` directly. Exists so
+`07-orchestrator/main.py` can feed the "agentic"/"agentic.tools" loggers'
+records (agent run/tool-call activity - see `09-agentic/plan.md` and
+`04-llm-client/plan.md`'s "Agent-only demo + tool-call logging" section)
+into the same activity log the orchestrator's own status lines already
+show, via `shared.logging_setup.CallbackHandler` - a generic
+`logging.Handler` that forwards `"name: message"` text to any callback,
+added there rather than here so it's reusable outside this module. This
+module still knows nothing about "agentic" specifically - `main.py` is
+the one that wires `CallbackHandler(tray_app.append_log)` onto those two
+loggers.
+
+Unit-tested (`test_tray_app.py`) and confirmed live end-to-end by
+replicating `main.py`'s wiring against a scripted tool call - see
+`docs/task.md`'s "Agentic logs on the dashboard" note. Not yet confirmed
+in the real dashboard window against a real conversation.
+
 ## Open decisions for this module
 
 - **GNOME tray icon support — resolved.** Needed `sudo apt install

@@ -636,6 +636,29 @@ def test_think_and_speak_reports_status_per_sentence():
     assert statuses == ["Speaking: 'Hi there.'", "Speaking: 'Bye.'"]
 
 
+def test_think_and_speak_skips_llm_call_while_paused():
+    llm = StreamingFakeLLM(["should not be spoken"])
+    tts = FakeTTS()
+    sink = FakeAudioSink()
+    orch = _make_orchestrator(llm=llm, tts=tts, audio_sink=sink)
+
+    orch.set_paused(True)
+    orch._think_and_speak("hello")
+
+    assert llm.calls == []
+    assert sink.played == []
+    assert orch.history == []
+
+
+def test_set_paused_defaults_to_false_and_round_trips():
+    orch = _make_orchestrator()
+    assert orch.is_paused() is False
+    orch.set_paused(True)
+    assert orch.is_paused() is True
+    orch.set_paused(False)
+    assert orch.is_paused() is False
+
+
 def test_is_responding_true_only_during_think_and_speak():
     llm = StreamingFakeLLM(["Hi there. "])
 

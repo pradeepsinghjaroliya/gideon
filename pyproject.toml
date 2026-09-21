@@ -6,6 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
     "pyyaml>=6.0",
     "numpy>=1.24",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -22,5 +23,5 @@ build-backend = "setuptools.build_meta"
 # import STTEngine`. When a new module is implemented, add one entry to
 # each of package-dir and packages below.
 [tool.setuptools]
-package-dir = { "shared" = "modules/00-shared/src/shared", "audio_io" = "modules/01-audio-io/src/audio_io", "wake_word" = "modules/02-wake-word/src/wake_word", "stt" = "modules/03-stt/src/stt", "llm_client" = "modules/04-llm-client/src/llm_client", "tts" = "modules/05-tts/src/tts", "text_input" = "modules/06-text-input/src/text_input", "orchestrator" = "modules/07-orchestrator/src/orchestrator", "transcript_ui" = "modules/08-transcript-ui/src/transcript_ui" }
-packages = ["shared", "audio_io", "wake_word", "stt", "llm_client", "tts", "text_input", "orchestrator", "transcript_ui"]
+package-dir = { "shared" = "modules/00-shared/src/shared", "audio_io" = "modules/01-audio-io/src/audio_io", "wake_word" = "modules/02-wake-word/src/wake_word", "stt" = "modules/03-stt/src/stt", "llm_client" = "modules/04-llm-client/src/llm_client", "tts" = "modules/05-tts/src/tts", "text_input" = "modules/06-text-input/src/text_input", "orchestrator" = "modules/07-orchestrator/src/orchestrator", "transcript_ui" = "modules/08-transcript-ui/src/transcript_ui", "agentic" = "modules/09-agentic/src/agentic" }
+packages = ["shared", "audio_io", "wake_word", "stt", "llm_client", "tts", "text_input", "orchestrator", "transcript_ui", "agentic"]
